@@ -179,29 +179,29 @@ class DualGpuBreezeTTS:
         )
         update_generation_config_for_breeze(self.model)
 
-        # 2. Place base model on dev0
-        print(f"Placing base model components on {self.dev0} in {self.dtype}...")
-        self.model.to(self.dev0, dtype=self.dtype).eval()
-        if self.model.text_encoder is not None:
-            self.model.text_encoder.to(self.dev0, dtype=torch.bfloat16).eval()
-        self.model.lm_head = self.model.lm_head.float()
-
-        # 3. Move Depth Decoder & Codec to dev1 and untie weights
-        print(f"Assigning Depth Decoder & Codec to {self.dev1}...")
-        self.model.depth_decoder.to(self.dev1, dtype=self.dtype).eval()
-        self.model.codec_model.to(self.dev1).eval()
-
-        print("Breaking tied weights across GPUs...")
+        # 2. Untie shared embeddings before device placement to avoid cross-device pointer conflicts
+        print("Untying shared embeddings across GPUs...")
         self.model.backbone_model.embed_tokens.embed_audio_tokens.weight = torch.nn.Parameter(
-            self.model.backbone_model.embed_tokens.embed_audio_tokens.weight.detach().clone().to(self.dev0)
+            self.model.backbone_model.embed_tokens.embed_audio_tokens.weight.detach().clone()
         )
         self.model.depth_decoder.model.embed_tokens.weight = torch.nn.Parameter(
-            self.model.depth_decoder.model.embed_tokens.weight.detach().clone().to(self.dev1)
+            self.model.depth_decoder.model.embed_tokens.weight.detach().clone()
         )
-        self.model.backbone_model.embed_tokens.audio_tokens_offsets = (
-            self.model.backbone_model.embed_tokens.audio_tokens_offsets.to(self.dev0)
-        )
-        self.model.backbone_model.embed_tokens.to(self.dev0)
+
+        # 3. Place GPU 0 components
+        print(f"Placing GPU 0 components on {self.dev0} in {self.dtype}...")
+        self.model.backbone_model.to(self.dev0, dtype=self.dtype).eval()
+        self.model.embed_text_tokens.to(self.dev0, dtype=self.dtype).eval()
+        self.model.lm_head = self.model.lm_head.to(self.dev0, dtype=torch.float32).eval()
+        if self.model.text_encoder is not None:
+            self.model.text_encoder.to(self.dev0, dtype=torch.bfloat16).eval()
+        if self.model.text_encoder_proj is not None:
+            self.model.text_encoder_proj.to(self.dev0, dtype=self.dtype).eval()
+
+        # 4. Place GPU 1 components
+        print(f"Placing GPU 1 components on {self.dev1} in {self.dtype}...")
+        self.model.depth_decoder.to(self.dev1, dtype=self.dtype).eval()
+        self.model.codec_model.to(self.dev1).eval()
 
         self.audio_tokenizer = Qwen3TTSTokenizer.from_pretrained(
             str(self.model_dir / 'audio_tokenizer'), device_map=str(self.dev1)
