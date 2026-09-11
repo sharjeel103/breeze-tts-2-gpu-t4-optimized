@@ -1,0 +1,41 @@
+# Model weights & large checkpoints
+breeze-tts-2/
+*.pt
+*.bin
+*.safetensors
+*.onnx
+
+# Audio outputs & data
+*.wav
+*.mp3
+*.flac
+*.ogg
+outputs/
+runs/
+
+# Python & Environment
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# IDE & Notebooks
+.vscode/
+.idea/
+.ipynb_checkpoints/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Temporary files & warmup logs
+warmup_manifest.json
+scratch/
