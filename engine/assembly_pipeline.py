@@ -311,35 +311,40 @@ class AssemblyPipelineEngine:
                 break
                 
             prefilled: PrefilledRequest = self.prefill_worker.ready_queue.get_nowait()
-            
-            idle_station.is_active = True
-            idle_station.request_id = prefilled.request_id
-            idle_station.prompt_text = prefilled.prompt_text
-            idle_station.effective_cfg = prefilled.effective_cfg
-            idle_station.bb_step = 0
-            idle_station.depth_step = 0
-            idle_station.prefill_len = prefilled.prefill_len
-            idle_station.max_frames = prefilled.max_frames
-            idle_station.chunk_buffer.clear()
-            idle_station.total_frames_generated = 0
-            idle_station.audio_queue = prefilled.audio_queue
-            
-            # Hot-inject state into station's static graph
-            idle_station.backbone_graph.guidance_scale.fill_(prefilled.effective_cfg)
-            idle_station.depth_graph.set_guidance_scale(prefilled.effective_cfg)
-            idle_station.backbone_graph.prefill_kv(prefilled.past_key_values)
-            idle_station.backbone_graph.set_generation_state(prefilled.branch_mask)
-            
-            # Initial token and hidden
-            idle_station.hidden_dev0.copy_(prefilled.initial_hidden[:, -1:, :])
-            idle_station.token_dev0.copy_(prefilled.initial_token.view(-1).repeat(2))
-            
-            # Initial transfer to dev1
-            idle_station.hidden_dev1.copy_(idle_station.hidden_dev0, non_blocking=True)
-            idle_station.token_dev1.copy_(idle_station.token_dev0, non_blocking=True)
-            
-            station_name = "A" if idle_station.station_id == 0 else "B"
-            print(f"[AssemblyLine] Station {station_name} Admitted: Req={prefilled.request_id} ('{prefilled.prompt_text[:25]}...')")
+            try:
+                idle_station.is_active = True
+                idle_station.request_id = prefilled.request_id
+                idle_station.prompt_text = prefilled.prompt_text
+                idle_station.effective_cfg = prefilled.effective_cfg
+                idle_station.bb_step = 0
+                idle_station.depth_step = 0
+                idle_station.prefill_len = prefilled.prefill_len
+                idle_station.max_frames = prefilled.max_frames
+                idle_station.chunk_buffer.clear()
+                idle_station.total_frames_generated = 0
+                idle_station.audio_queue = prefilled.audio_queue
+                
+                # Hot-inject state into station's static graph
+                idle_station.backbone_graph.guidance_scale.fill_(prefilled.effective_cfg)
+                idle_station.depth_graph.set_guidance_scale(prefilled.effective_cfg)
+                idle_station.backbone_graph.prefill_kv(prefilled.past_key_values)
+                idle_station.backbone_graph.set_generation_state(prefilled.branch_mask)
+                
+                # Initial token and hidden
+                idle_station.hidden_dev0.copy_(prefilled.initial_hidden[:, -1:, :])
+                idle_station.token_dev0.copy_(prefilled.initial_token.view(-1).repeat(2))
+                
+                # Initial transfer to dev1
+                idle_station.hidden_dev1.copy_(idle_station.hidden_dev0, non_blocking=True)
+                idle_station.token_dev1.copy_(idle_station.token_dev0, non_blocking=True)
+                
+                station_name = "A" if idle_station.station_id == 0 else "B"
+                print(f"[AssemblyLine] Station {station_name} Admitted: Req={prefilled.request_id} ('{prefilled.prompt_text[:25]}...')", flush=True)
+            except Exception as e:
+                import traceback
+                print(f"[AssemblyLine] ERROR during admission of {prefilled.request_id}: {e}", flush=True)
+                traceback.print_exc()
+                idle_station.is_active = False
 
     def step_assembly(self):
         """
@@ -470,12 +475,18 @@ class AssemblyPipelineEngine:
 
     async def run_continuous_loop(self):
         self.running = True
-        print("[AssemblyLine] Master Continuous Assembly Loop Running!")
+        print("[AssemblyLine] Master Continuous Assembly Loop Running!", flush=True)
         prefill_task = asyncio.create_task(self.prefill_worker.run_loop())
         try:
             while self.running:
-                self._admit_pending_prefilled()
-                active = self.step_assembly()
+                try:
+                    self._admit_pending_prefilled()
+                    active = self.step_assembly()
+                except Exception as e:
+                    import traceback
+                    print(f"[AssemblyLine] CRITICAL ERROR IN ASSEMBLY LOOP: {e}", flush=True)
+                    traceback.print_exc()
+                    break
                 if active == 0:
                     await asyncio.sleep(0.005)
                 else:
