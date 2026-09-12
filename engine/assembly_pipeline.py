@@ -375,7 +375,14 @@ class AssemblyPipelineEngine:
         if stB.is_active and stB.bb_step < stB.depth_step:
             with torch.cuda.device(self.dev0), torch.cuda.stream(self.stream_bb_B):
                 h_b, logits_b = stB.backbone_graph.run(stB.frame_dev0, step_idx=stB.bb_step)
-                tok_b = sample_logits(logits_b.float(), suppress_tokens=self._reserved_tokens, temperature=0.8).view(1)
+                tok_b = sample_logits(
+                    logits_b.float(),
+                    suppress_tokens=self._reserved_tokens,
+                    temperature=self.config.temperature,
+                    top_k=self.config.top_k,
+                    top_p=self.config.top_p,
+                    do_sample=self.config.do_sample,
+                ).view(1)
                 stB.token_dev0.copy_(tok_b.repeat(2))
                 stB.hidden_dev0.copy_(h_b[:, -1:, :])
                 stB.bb_step += 1
@@ -423,7 +430,14 @@ class AssemblyPipelineEngine:
         if stA.is_active and stA.bb_step < stA.depth_step:
             with torch.cuda.device(self.dev0), torch.cuda.stream(self.stream_bb_A):
                 h_a, logits_a = stA.backbone_graph.run(stA.frame_dev0, step_idx=stA.bb_step)
-                tok_a = sample_logits(logits_a.float(), suppress_tokens=self._reserved_tokens, temperature=0.8).view(1)
+                tok_a = sample_logits(
+                    logits_a.float(),
+                    suppress_tokens=self._reserved_tokens,
+                    temperature=self.config.temperature,
+                    top_k=self.config.top_k,
+                    top_p=self.config.top_p,
+                    do_sample=self.config.do_sample,
+                ).view(1)
                 stA.token_dev0.copy_(tok_a.repeat(2))
                 stA.hidden_dev0.copy_(h_a[:, -1:, :])
                 stA.bb_step += 1
