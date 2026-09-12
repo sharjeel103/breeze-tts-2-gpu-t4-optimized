@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.absolute()))
 from engine.config import EngineConfig
 from engine.assembly_pipeline import AssemblyPipelineEngine
 
+@torch.inference_mode()
 def main():
     print("=== STARTING ADMISSION AND STEP DIAGNOSTIC ===", flush=True)
     cfg = EngineConfig(num_slots=2, chunk_size=5)

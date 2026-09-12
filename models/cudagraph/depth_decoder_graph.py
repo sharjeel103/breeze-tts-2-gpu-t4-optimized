@@ -241,6 +241,7 @@ class DepthDecoderGraph:
     # Runtime setters — no recapture needed
     # ------------------------------------------------------------------
 
+    @torch.inference_mode()
     def set_temperature(self, v):
         """v: scalar float (broadcast) or [half] / [half,1] tensor (per-sample)."""
         if isinstance(v, (int, float)):
@@ -248,6 +249,7 @@ class DepthDecoderGraph:
         else:
             self.temperature_buf.copy_(v.view(self.half, 1))
 
+    @torch.inference_mode()
     def set_top_k(self, v):
         """v: scalar int (broadcast) or [half] / [half,1] tensor (per-sample)."""
         if isinstance(v, (int, float)):
@@ -261,6 +263,7 @@ class DepthDecoderGraph:
             )
             self.top_k_buf.copy_(v.view(self.half, 1))
 
+    @torch.inference_mode()
     def set_top_p(self, v):
         """v: scalar float (broadcast) or [half] / [half,1] tensor (per-sample)."""
         if isinstance(v, (int, float)):
@@ -268,6 +271,7 @@ class DepthDecoderGraph:
         else:
             self.top_p_buf.copy_(v.view(self.half, 1))
 
+    @torch.inference_mode()
     def set_do_sample(self, v):
         """v: scalar bool (broadcast) or [half] long tensor (per-sample, 0/1)."""
         if isinstance(v, (bool, int, float)):
@@ -275,6 +279,7 @@ class DepthDecoderGraph:
         else:
             self.do_sample_buf.copy_(v.view(self.half))
 
+    @torch.inference_mode()
     def set_guidance_scale(self, v):
         """v: scalar float (broadcast) or [half] / [half,1] tensor (per-sample)."""
         if isinstance(v, (int, float)):

@@ -297,6 +297,7 @@ class AssemblyPipelineEngine:
         print(f"✨ Battle-Tested Assembly Engine Ready in {t_init:.2f}s!")
         print("=" * 60)
 
+    @torch.inference_mode()
     def _admit_pending_prefilled(self):
         """
         Hot-injects waiting requests from prefill worker queue into idle stations.
@@ -346,6 +347,7 @@ class AssemblyPipelineEngine:
                 traceback.print_exc()
                 idle_station.is_active = False
 
+    @torch.inference_mode()
     def step_assembly(self):
         """
         Executes one Macro-Pipelined Double-Buffered assembly cycle:
