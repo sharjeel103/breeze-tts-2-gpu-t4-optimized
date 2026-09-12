@@ -115,11 +115,11 @@ async def main():
         for client_meta in BENCHMARK_PROMPTS
     ]
     
-    gather_task = asyncio.create_task(asyncio.gather(*client_tasks))
-    done, pending = await asyncio.wait([gather_task, loop_task], return_when=asyncio.FIRST_COMPLETED)
+    gather_fut = asyncio.ensure_future(asyncio.gather(*client_tasks))
+    done, pending = await asyncio.wait([gather_fut, loop_task], return_when=asyncio.FIRST_COMPLETED)
     if loop_task in done and loop_task.exception():
         raise loop_task.exception()
-    await gather_task
+    await gather_fut
     
     t_global_end = time.time()
     total_wall_time = t_global_end - t_global_start
