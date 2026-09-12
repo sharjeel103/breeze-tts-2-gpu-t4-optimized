@@ -157,6 +157,7 @@ class Station:
     chunk_buffer: List[torch.Tensor] = field(default_factory=list)
     total_frames_generated: int = 0
     audio_queue: Optional[asyncio.Queue] = None
+    first_chunk_emitted: bool = False
 
 class AssemblyPipelineEngine:
     def __init__(self, config: Optional[EngineConfig] = None):
@@ -238,6 +239,7 @@ class AssemblyPipelineEngine:
             sample_rate=self.config.sample_rate,
             chunk_size=self.config.chunk_size,
         )
+        self.vocoder_worker.warmup()
         
         # 5. Initialize Station A and Station B with independent CUDA Graphs & Caches
         print("-> Capturing Static CUDA Graphs for Station A and Station B...")
@@ -324,6 +326,7 @@ class AssemblyPipelineEngine:
                 idle_station.chunk_buffer.clear()
                 idle_station.total_frames_generated = 0
                 idle_station.audio_queue = prefilled.audio_queue
+                idle_station.first_chunk_emitted = False
                 
                 # Hot-inject state into station's static graph
                 idle_station.backbone_graph.guidance_scale.fill_(prefilled.effective_cfg)
@@ -475,7 +478,9 @@ class AssemblyPipelineEngine:
         for st in self.stations:
             if not st.is_active:
                 continue
-            if len(st.chunk_buffer) >= self.config.chunk_size:
+            threshold = 2 if not st.first_chunk_emitted else self.config.chunk_size
+            if len(st.chunk_buffer) >= threshold:
+                st.first_chunk_emitted = True
                 chunk_to_emit = list(st.chunk_buffer)
                 st.chunk_buffer.clear()
                 if st.audio_queue is not None:

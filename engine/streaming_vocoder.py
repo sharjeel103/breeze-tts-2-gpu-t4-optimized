@@ -25,7 +25,15 @@ class StreamingVocoderWorker:
         self.chunk_size = chunk_size
         
         # Dedicated hardware stream on GPU 1
-        self.stream = torch.cuda.Stream(device=self.device)
+        self.stream = torch.cuda.Stream(device=self.dev1 if hasattr(self, 'dev1') else self.device)
+
+    def warmup(self):
+        """Warm up cuDNN and PyTorch JIT for the audio tokenizer decode."""
+        print("[StreamingVocoder] Warming up neural vocoder on GPU 1...")
+        dummy_frames = [torch.zeros(16, dtype=torch.long, device=self.device) for _ in range(self.chunk_size)]
+        self.decode_chunk_sync(dummy_frames)
+        torch.cuda.synchronize(self.device)
+        print("[StreamingVocoder] Neural vocoder warmed up!")
 
     def decode_chunk_sync(self, frames: List[torch.Tensor]) -> bytes:
         """
