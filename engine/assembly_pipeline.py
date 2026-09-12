@@ -243,13 +243,22 @@ class AssemblyPipelineEngine:
             )
             self.backbone_graph.capture(prefill_len=64)
             
+            depth_gen = self.model.depth_decoder.generation_config
             self.depth_graph = DepthDecoderGraph(
                 depth_decoder=self.model.depth_decoder,
                 config=self.model.config.depth_decoder_config,
-                device=self.dev1,
+                device=str(self.dev1),
                 dtype=self.config.dtype,
-                max_seq_len=self.model.config.depth_decoder_config.num_codebooks + 2,
+                guidance_scale=self.config.guidance_scale,
+                num_codebooks=int(self.model.config.num_codebooks),
+                codec_codebook_size=int(self.model.config.codec_config.codebook_size),
+                fast=False,
+                batch_size=2,
                 bucket_sizes=[1, 2],
+                temperature=float(getattr(depth_gen, 'temperature', 0.9)),
+                top_k=int(getattr(depth_gen, 'top_k', 50)),
+                top_p=float(getattr(depth_gen, 'top_p', 1.0)),
+                do_sample=bool(getattr(depth_gen, 'do_sample', True)),
             )
             self.depth_graph.capture()
             
