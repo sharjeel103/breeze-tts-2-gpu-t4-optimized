@@ -62,11 +62,14 @@ class AsyncPrefillWorker:
         
         # Template preparation
         inputs = prepare_inputs(
-            template=template,
-            request=request,
-            tokenizer=self.model.tokenizer,
-            audio_tokenizer=self.model.audio_tokenizer,
-            model_config=self.model.config,
+            self.model.tokenizer,
+            self.model.audio_tokenizer,
+            self.model,
+            [request],
+            template,
+            guidance_scale=guidance_scale,
+            guidance_scale_ref=None,
+            guidance_scale_ins=None,
         )
         
         with torch.cuda.device(self.dev0), torch.cuda.stream(self.stream):
