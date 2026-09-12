@@ -58,6 +58,7 @@ class AsyncPrefillWorker:
                 print(f"[PrefillWorker] ERROR prefilling {req_id}: {e}")
                 traceback.print_exc()
 
+    @torch.inference_mode()
     def prefill_sync(
         self,
         request_id: str,
