@@ -137,10 +137,10 @@ def resolve_model_dir(model_dir: Optional[Union[str, Path]] = None) -> Path:
         if cand.exists() and (cand / 'config.json').exists():
             return cand
 
-    print("Model weights not found locally. Downloading from Hugging Face: breezeblue-ai/breeze-tts-2 ...")
+    print("Model weights not found locally. Downloading from Hugging Face: BreezeBlue/Breeze-TTS-2 ...")
     from huggingface_hub import snapshot_download
     target_dir = Path('/kaggle/working/breeze-tts-2') if Path('/kaggle/working').exists() else (REPO_ROOT / 'breeze-tts-2')
-    snapshot_download('breezeblue-ai/breeze-tts-2', local_dir=str(target_dir))
+    snapshot_download('BreezeBlue/Breeze-TTS-2', local_dir=str(target_dir))
     return target_dir
 
 
