@@ -408,7 +408,12 @@ def main():
 
     demo = create_ui()
     print(f"Launching Gradio UI on {args.host}:{args.port} (share={args.share})...")
-    demo.launch(server_name=args.host, server_port=args.port, share=args.share)
+    demo.launch(
+        server_name=args.host,
+        server_port=args.port,
+        share=args.share,
+        allowed_paths=["/kaggle/working", "/kaggle/temp", "/tmp", str(REPO_ROOT), str(Path.cwd())],
+    )
 
 
 if __name__ == "__main__":

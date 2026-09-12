@@ -277,7 +277,9 @@ class DualGpuBreezeTTS:
         set_all_seeds(seed)
 
         if not output_path:
-            output_path = f"/kaggle/working/output_{int(time.time()*1000)}.wav" if Path('/kaggle/working').exists() else f"output_{int(time.time()*1000)}.wav"
+            out_dir = Path.cwd() / "outputs"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            output_path = str(out_dir / f"output_{int(time.time()*1000)}.wav")
 
         # Build request dict
         request: Dict[str, Any] = {
