@@ -28,6 +28,83 @@ from models.cudagraph.depth_decoder_graph import DepthDecoderGraph
 from models.cudagraph.sampling import sample_logits
 from models.fast_streaming import is_backbone_eos_token, should_decode_codec_frame
 
+# Multi-Device CUDA Graph Capture Patches
+def fixed_bg_capture(self, prefill_len=100, num_warmup=3):
+    with torch.cuda.device(self.device):
+        torch.cuda.set_device(self.device)
+        self._init_cache_layers()
+        self._build_initial_attention_mask()
+        self.cache_position[0] = prefill_len
+        self.position_ids.fill_(prefill_len)
+        self._pad_lens.zero_()
+        self._set_attention_mask(prefill_len)
+
+        for _ in range(num_warmup):
+            self._decode_step()
+        torch.cuda.synchronize(device=self.device)
+
+        self.graph = torch.cuda.CUDAGraph()
+        s = torch.cuda.Stream(device=self.device)
+        s.wait_stream(torch.cuda.current_stream(self.device))
+        with torch.cuda.stream(s):
+            self._decode_step()
+            torch.cuda.synchronize(device=self.device)
+            with torch.cuda.graph(self.graph, stream=s):
+                self._decode_step()
+
+        torch.cuda.current_stream(self.device).wait_stream(s)
+        torch.cuda.synchronize(device=self.device)
+        self.captured = True
+        print(f"Backbone CUDA graph captured on {self.device}!")
+
+BackboneGraph.capture = fixed_bg_capture
+
+
+@torch.inference_mode()
+def fixed_capture_single_bucket(self, bsz: int, num_warmup: int):
+    with torch.cuda.device(self.device):
+        torch.cuda.set_device(self.device)
+        self.batch_size = bsz
+        self.half = self._real_batch_size(bsz)
+        self.static_cache = StaticCache(
+            config=self.config, max_cache_len=self.max_seq, batch_size=bsz
+        )
+        self._alloc_buffers()
+        self._init_cache_layers()
+        self._build_attention_masks()
+
+        for _ in range(num_warmup):
+            self.static_cache.reset()
+            self._full_loop()
+        torch.cuda.synchronize(device=self.device)
+
+        s = torch.cuda.Stream(device=self.device)
+        s.wait_stream(torch.cuda.current_stream(self.device))
+        with torch.cuda.stream(s):
+            self.graph = torch.cuda.CUDAGraph()
+            self.static_cache.reset()
+            self._full_loop()
+            torch.cuda.synchronize(device=self.device)
+
+            self.static_cache.reset()
+            with torch.cuda.graph(self.graph, stream=s):
+                self._full_loop()
+
+        torch.cuda.current_stream(self.device).wait_stream(s)
+        torch.cuda.synchronize(device=self.device)
+
+        self._bucket_graphs[bsz] = self._snapshot_state()
+        print(f"  Depth decoder CUDA graph captured for bucket_size={bsz} on {self.device}")
+
+DepthDecoderGraph._capture_single_bucket = fixed_capture_single_bucket
+
+orig_proj = BreezeForConditionalGeneration._project_segments
+def safe_project_segments(self, segment_lengths, seg_hidden_states, seg_layer_hidden_states, is_separate):
+    casted_hs = [hs.to(self.text_encoder_proj.weight.dtype) for hs in seg_hidden_states]
+    return orig_proj(self, segment_lengths, casted_hs, seg_layer_hidden_states, is_separate)
+
+BreezeForConditionalGeneration._project_segments = safe_project_segments
+
 class AssemblyPipelineEngine:
     def __init__(self, config: Optional[EngineConfig] = None):
         self.config = config or EngineConfig()
