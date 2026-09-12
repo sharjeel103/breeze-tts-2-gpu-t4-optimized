@@ -33,8 +33,30 @@ class AsyncPrefillWorker:
         self.model = model
         self.dev0 = dev0
         self.stream = torch.cuda.Stream(device=self.dev0)
+        self.incoming_queue: asyncio.Queue = asyncio.Queue()
         self.ready_queue: asyncio.Queue = asyncio.Queue()
+        self.running: bool = False
         self._reserved_tokens = [0, 1, 2, 3]
+
+    async def run_loop(self):
+        self.running = True
+        loop = asyncio.get_running_loop()
+        print("[PrefillWorker] Asynchronous Prefill Loop Started on GPU 0 Stream")
+        while self.running:
+            try:
+                kwargs = await self.incoming_queue.get()
+                t0 = time.time()
+                prefilled = await loop.run_in_executor(None, lambda kw=kwargs: self.prefill_sync(**kw))
+                await self.ready_queue.put(prefilled)
+                dt = (time.time() - t0) * 1000.0
+                print(f"[PrefillWorker] Request {prefilled.request_id} prefilled in {dt:.1f}ms (seq_len={prefilled.prefill_len})")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                import traceback
+                req_id = kwargs.get('request_id', 'unknown') if 'kwargs' in locals() else 'unknown'
+                print(f"[PrefillWorker] ERROR prefilling {req_id}: {e}")
+                traceback.print_exc()
 
     def prefill_sync(
         self,
@@ -171,8 +193,5 @@ class AsyncPrefillWorker:
             past_key_values=backbone_out.past_key_values,
         )
 
-    async def submit_prefill(self, **kwargs) -> PrefilledRequest:
-        loop = asyncio.get_running_loop()
-        prefilled = await loop.run_in_executor(None, lambda: self.prefill_sync(**kwargs))
-        await self.ready_queue.put(prefilled)
-        return prefilled
+    async def submit_prefill(self, **kwargs):
+        await self.incoming_queue.put(kwargs)

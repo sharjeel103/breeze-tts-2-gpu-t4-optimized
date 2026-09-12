@@ -471,13 +471,18 @@ class AssemblyPipelineEngine:
     async def run_continuous_loop(self):
         self.running = True
         print("[AssemblyLine] Master Continuous Assembly Loop Running!")
-        while self.running:
-            self._admit_pending_prefilled()
-            active = self.step_assembly()
-            if active == 0:
-                await asyncio.sleep(0.005)
-            else:
-                await asyncio.sleep(0.001)
+        prefill_task = asyncio.create_task(self.prefill_worker.run_loop())
+        try:
+            while self.running:
+                self._admit_pending_prefilled()
+                active = self.step_assembly()
+                if active == 0:
+                    await asyncio.sleep(0.005)
+                else:
+                    await asyncio.sleep(0.0005)
+        finally:
+            self.prefill_worker.running = False
+            prefill_task.cancel()
 
     async def submit_request(
         self,
