@@ -105,6 +105,26 @@ def safe_project_segments(self, segment_lengths, seg_hidden_states, seg_layer_hi
 
 BreezeForConditionalGeneration._project_segments = safe_project_segments
 
+def resolve_model_dir(model_id: str) -> Path:
+    if Path(model_id).exists():
+        return Path(model_id)
+    candidates = [
+        Path('/kaggle/working/breeze-tts-2'),
+        Path.cwd() / 'breeze-tts-2',
+        Path(__file__).resolve().parent.parent / 'breeze-tts-2',
+    ]
+    for c in candidates:
+        if c.exists() and (c / 'config.json').exists():
+            return c
+    from huggingface_hub import snapshot_download
+    try:
+        p = snapshot_download(model_id)
+        return Path(p)
+    except Exception:
+        target = Path('/kaggle/working/breeze-tts-2') if Path('/kaggle/working').exists() else (Path.cwd() / 'breeze-tts-2')
+        snapshot_download(model_id, local_dir=str(target))
+        return target
+
 class AssemblyPipelineEngine:
     def __init__(self, config: Optional[EngineConfig] = None):
         self.config = config or EngineConfig()
@@ -134,14 +154,20 @@ class AssemblyPipelineEngine:
         print("=" * 60)
         t0 = time.time()
         
+        # Resolve model directory
+        self.model_dir = resolve_model_dir(self.config.model_id)
+        print(f"-> Model directory resolved: {self.model_dir}")
+        
         # 1. Load Tokenizers
-        self.tokenizer = AutoTokenizer.from_pretrained(self.config.model_id)
-        self.audio_tokenizer = Qwen3TTSTokenizer.from_pretrained(self.config.model_id)
+        self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_dir))
+        self.audio_tokenizer = Qwen3TTSTokenizer.from_pretrained(
+            str(self.model_dir / 'audio_tokenizer'), device_map=str(self.dev1)
+        )
         
         # 2. Load Model across GPUs
         print("-> Loading model components into VRAM...")
         self.model = BreezeForConditionalGeneration.from_pretrained(
-            self.config.model_id,
+            str(self.model_dir),
             torch_dtype=self.config.dtype,
             low_cpu_mem_usage=True,
         )
@@ -156,8 +182,8 @@ class AssemblyPipelineEngine:
         self.model.backbone_model.to(self.dev0, dtype=self.config.dtype)
         self.model.lm_head.to(self.dev0, dtype=torch.float32)  # FP32 stability
         
-        self.model.depth_decoder.to(self.dev1, dtype=self.config.dtype)
-        self.audio_tokenizer.to(self.dev1)
+        self.model.depth_decoder.to(self.dev1, dtype=self.config.dtype).eval()
+        self.model.codec_model.to(self.dev1).eval()
         
         # 3. Initialize Workers
         self.prefill_worker = AsyncPrefillWorker(self.model, dev0=self.dev0)
