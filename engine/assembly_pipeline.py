@@ -417,30 +417,27 @@ class AssemblyPipelineEngine:
         # 1. Station A Step on GPU 0 Stream
         # -------------------------------------------------------------
         if stA.is_active:
-            with torch.cuda.device(stA.device), torch.cuda.stream(self.stream_A):
-                # Depth Step
-                h_a = stA.hidden_buf[:, 0, :]
-                depth_toks_a = stA.depth_graph.run(h_a, stA.token_buf, guidance_scale=stA.effective_cfg, temperature=0.8)
-                frame_a = torch.cat([stA.token_buf[:1].view(1), depth_toks_a[0]], dim=0)
-                stA.chunk_buffer.append(frame_a.detach())
-                stA.total_frames_generated += 1
-                stA.depth_step += 1
-                
-                hit_eos_a = is_backbone_eos_token(stA.token_buf[:1], self.model.config)
-                hit_max_a = stA.depth_step >= stA.max_frames or stA.depth_step >= (self.config.max_seq_len - 1)
-                if hit_eos_a or hit_max_a:
-                    stA.is_active = False
-                    dur = stA.total_frames_generated * 0.08
-                    print(f"[AssemblyLine] Station A Finished ({'EOS' if hit_eos_a else 'Max'}): Req={stA.request_id} | Frames={stA.total_frames_generated} ({dur:.2f}s audio)")
-                    if stA.chunk_buffer:
-                        chunk = list(stA.chunk_buffer)
-                        stA.chunk_buffer.clear()
-                        if stA.audio_queue is not None:
-                            asyncio.create_task(self.vocoder_worker.emit_chunk(stA.audio_queue, chunk, is_final=True))
-                    elif stA.audio_queue is not None:
-                        asyncio.create_task(self.vocoder_worker.emit_chunk(stA.audio_queue, [], is_final=True))
-                    stA.request_id = None
-                else:
+            hit_eos_a = is_backbone_eos_token(stA.token_buf[:1], self.model.config)
+            hit_max_a = stA.depth_step >= stA.max_frames or (stA.prefill_len + stA.depth_step) >= (self.config.max_seq_len - 1)
+            if hit_eos_a or hit_max_a:
+                stA.is_active = False
+                dur = stA.total_frames_generated * 0.08
+                print(f"[AssemblyLine] Station A Finished ({'EOS' if hit_eos_a else 'Max'}): Req={stA.request_id} | Frames={stA.total_frames_generated} ({dur:.2f}s audio)")
+                chunk = list(stA.chunk_buffer)
+                stA.chunk_buffer.clear()
+                if stA.audio_queue is not None:
+                    asyncio.create_task(self.vocoder_worker.emit_chunk(stA.audio_queue, chunk, is_final=True))
+                stA.request_id = None
+            else:
+                with torch.cuda.device(stA.device), torch.cuda.stream(self.stream_A):
+                    # Depth Step
+                    h_a = stA.hidden_buf[:, 0, :]
+                    depth_toks_a = stA.depth_graph.run(h_a, stA.token_buf, guidance_scale=stA.effective_cfg, temperature=0.8)
+                    frame_a = torch.cat([stA.token_buf[:1].view(1), depth_toks_a[0]], dim=0)
+                    stA.chunk_buffer.append(frame_a.detach())
+                    stA.total_frames_generated += 1
+                    stA.depth_step += 1
+
                     # Backbone Step
                     stA.frame_buf.copy_(frame_a.view(1, 1, 16).repeat(2, 1, 1))
                     h_a_next, logits_a = stA.backbone_graph.run(stA.frame_buf, step_idx=stA.bb_step)
@@ -460,30 +457,27 @@ class AssemblyPipelineEngine:
         # 2. Station B Step on GPU 1 Stream (Concurrent with Station A!)
         # -------------------------------------------------------------
         if stB.is_active:
-            with torch.cuda.device(stB.device), torch.cuda.stream(self.stream_B):
-                # Depth Step
-                h_b = stB.hidden_buf[:, 0, :]
-                depth_toks_b = stB.depth_graph.run(h_b, stB.token_buf, guidance_scale=stB.effective_cfg, temperature=0.8)
-                frame_b = torch.cat([stB.token_buf[:1].view(1), depth_toks_b[0]], dim=0)
-                stB.chunk_buffer.append(frame_b.detach())
-                stB.total_frames_generated += 1
-                stB.depth_step += 1
-                
-                hit_eos_b = is_backbone_eos_token(stB.token_buf[:1], self.model.config)
-                hit_max_b = stB.depth_step >= stB.max_frames or stB.depth_step >= (self.config.max_seq_len - 1)
-                if hit_eos_b or hit_max_b:
-                    stB.is_active = False
-                    dur = stB.total_frames_generated * 0.08
-                    print(f"[AssemblyLine] Station B Finished ({'EOS' if hit_eos_b else 'Max'}): Req={stB.request_id} | Frames={stB.total_frames_generated} ({dur:.2f}s audio)")
-                    if stB.chunk_buffer:
-                        chunk = list(stB.chunk_buffer)
-                        stB.chunk_buffer.clear()
-                        if stB.audio_queue is not None:
-                            asyncio.create_task(self.vocoder_worker.emit_chunk(stB.audio_queue, chunk, is_final=True))
-                    elif stB.audio_queue is not None:
-                        asyncio.create_task(self.vocoder_worker.emit_chunk(stB.audio_queue, [], is_final=True))
-                    stB.request_id = None
-                else:
+            hit_eos_b = is_backbone_eos_token(stB.token_buf[:1], self.model.config)
+            hit_max_b = stB.depth_step >= stB.max_frames or (stB.prefill_len + stB.depth_step) >= (self.config.max_seq_len - 1)
+            if hit_eos_b or hit_max_b:
+                stB.is_active = False
+                dur = stB.total_frames_generated * 0.08
+                print(f"[AssemblyLine] Station B Finished ({'EOS' if hit_eos_b else 'Max'}): Req={stB.request_id} | Frames={stB.total_frames_generated} ({dur:.2f}s audio)")
+                chunk = list(stB.chunk_buffer)
+                stB.chunk_buffer.clear()
+                if stB.audio_queue is not None:
+                    asyncio.create_task(self.vocoder_worker.emit_chunk(stB.audio_queue, chunk, is_final=True))
+                stB.request_id = None
+            else:
+                with torch.cuda.device(stB.device), torch.cuda.stream(self.stream_B):
+                    # Depth Step
+                    h_b = stB.hidden_buf[:, 0, :]
+                    depth_toks_b = stB.depth_graph.run(h_b, stB.token_buf, guidance_scale=stB.effective_cfg, temperature=0.8)
+                    frame_b = torch.cat([stB.token_buf[:1].view(1), depth_toks_b[0]], dim=0)
+                    stB.chunk_buffer.append(frame_b.detach())
+                    stB.total_frames_generated += 1
+                    stB.depth_step += 1
+
                     # Backbone Step
                     stB.frame_buf.copy_(frame_b.view(1, 1, 16).repeat(2, 1, 1))
                     h_b_next, logits_b = stB.backbone_graph.run(stB.frame_buf, step_idx=stB.bb_step)

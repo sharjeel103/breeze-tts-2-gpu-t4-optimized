@@ -77,13 +77,14 @@ class StreamingVocoderWorker:
         """
         Asynchronously runs decode_chunk_sync in threadpool and pushes to queue.
         """
-        loop = asyncio.get_running_loop()
-        wav_bytes = await loop.run_in_executor(None, self.decode_chunk_sync, frames)
-        await queue.put({
-            "type": "audio_chunk",
-            "data": wav_bytes,
-            "num_frames": len(frames),
-            "is_final": is_final,
-        })
+        if frames:
+            loop = asyncio.get_running_loop()
+            wav_bytes = await loop.run_in_executor(None, self.decode_chunk_sync, frames)
+            await queue.put({
+                "type": "audio_chunk",
+                "data": wav_bytes,
+                "num_frames": len(frames),
+                "is_final": is_final,
+            })
         if is_final:
             await queue.put({"type": "eos"})
