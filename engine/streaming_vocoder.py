@@ -30,10 +30,11 @@ class StreamingVocoderWorker:
     def warmup(self):
         """Warm up cuDNN and PyTorch JIT for the audio tokenizer decode."""
         print("[StreamingVocoder] Warming up neural vocoder on GPU 1...")
-        dummy_frames = [torch.zeros(16, dtype=torch.long, device=self.device) for _ in range(self.chunk_size)]
-        self.decode_chunk_sync(dummy_frames)
+        for sz in [1, 2, self.chunk_size]:
+            dummy_frames = [torch.zeros(16, dtype=torch.long, device=self.device) for _ in range(sz)]
+            self.decode_chunk_sync(dummy_frames)
         torch.cuda.synchronize(self.device)
-        print("[StreamingVocoder] Neural vocoder warmed up!")
+        print("[StreamingVocoder] Neural vocoder fully warmed up for all chunk sizes!")
 
     def decode_chunk_sync(self, frames: List[torch.Tensor]) -> bytes:
         """

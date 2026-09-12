@@ -478,7 +478,7 @@ class AssemblyPipelineEngine:
         for st in self.stations:
             if not st.is_active:
                 continue
-            threshold = 2 if not st.first_chunk_emitted else self.config.chunk_size
+            threshold = 1 if not st.first_chunk_emitted else self.config.chunk_size
             if len(st.chunk_buffer) >= threshold:
                 st.first_chunk_emitted = True
                 chunk_to_emit = list(st.chunk_buffer)
