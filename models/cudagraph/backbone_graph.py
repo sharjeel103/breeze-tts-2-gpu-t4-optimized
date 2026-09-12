@@ -341,6 +341,9 @@ class BackboneGraph:
         seq_len = 0
         for li in range(self.num_layers):
             k, v = past_key_values[li]
+            if k.device != self.device:
+                k = k.to(self.device, non_blocking=True)
+                v = v.to(self.device, non_blocking=True)
             seq_len = k.shape[2]
             if seq_len > self.max_seq_len:
                 raise RuntimeError(
