@@ -174,14 +174,30 @@ class AssemblyPipelineEngine:
         self.model.eval()
         self.model.tokenizer = self.tokenizer
         self.model.audio_tokenizer = self.audio_tokenizer
-        
+
+        from breeze_infer.runtime import update_generation_config_for_breeze
+        update_generation_config_for_breeze(self.model)
+
+        # Untie shared embeddings before device placement to avoid cross-device pointer conflicts
+        print("-> Untying shared embeddings across GPUs...")
+        self.model.backbone_model.embed_tokens.embed_audio_tokens.weight = torch.nn.Parameter(
+            self.model.backbone_model.embed_tokens.embed_audio_tokens.weight.detach().clone()
+        )
+        self.model.depth_decoder.model.embed_tokens.weight = torch.nn.Parameter(
+            self.model.depth_decoder.model.embed_tokens.weight.detach().clone()
+        )
+
         # Partition Model: GPU 0 (Text Encoder + Backbone), GPU 1 (Depth Decoder + Vocoder)
-        self.model.text_encoder.to(self.dev0, dtype=torch.bfloat16)
-        if hasattr(self.model, 'text_encoder_proj') and self.model.text_encoder_proj is not None:
-            self.model.text_encoder_proj.to(self.dev0, dtype=self.config.dtype)
-        self.model.backbone_model.to(self.dev0, dtype=self.config.dtype)
-        self.model.lm_head.to(self.dev0, dtype=torch.float32)  # FP32 stability
-        
+        print(f"-> Placing GPU 0 components on {self.dev0}...")
+        self.model.backbone_model.to(self.dev0, dtype=self.config.dtype).eval()
+        self.model.embed_text_tokens.to(self.dev0, dtype=self.config.dtype).eval()
+        self.model.lm_head = self.model.lm_head.to(self.dev0, dtype=torch.float32).eval()
+        if self.model.text_encoder is not None:
+            self.model.text_encoder.to(self.dev0, dtype=torch.bfloat16).eval()
+        if self.model.text_encoder_proj is not None:
+            self.model.text_encoder_proj.to(self.dev0, dtype=self.config.dtype).eval()
+
+        print(f"-> Placing GPU 1 components on {self.dev1}...")
         self.model.depth_decoder.to(self.dev1, dtype=self.config.dtype).eval()
         self.model.codec_model.to(self.dev1).eval()
         
