@@ -279,6 +279,7 @@ class AssemblyPipelineEngine:
             top_p=float(getattr(depth_gen, 'top_p', 1.0)),
             do_sample=bool(getattr(depth_gen, 'do_sample', True)),
         )
+        dg_a.capture()
 
         # Station B Graphs (on cuda:1)
         print("  [Station B (cuda:1)] Capturing Backbone Graph (batch=2)...")
@@ -312,6 +313,7 @@ class AssemblyPipelineEngine:
             top_p=float(getattr(depth_gen, 'top_p', 1.0)),
             do_sample=bool(getattr(depth_gen, 'do_sample', True)),
         )
+        dg_b.capture()
 
         # Station A Object
         stA = Station(
