@@ -9,13 +9,15 @@ import torch
 class EngineConfig:
     # Slot & Concurrency Settings
     num_slots: int = 4              # Number of in-flight active slots (4 or 8)
-    max_seq_len: int = 1024         # Max acoustic frames (1024 * 0.08s = 81.92s)
+    max_seq_len: int = 2560         # Max acoustic frames (2560 * 0.08s = 204.8s for 500-word prompts)
     chunk_size: int = 5             # Frames per streaming vocoder chunk (5 * 80ms = 400ms)
     sample_rate: int = 24000        # Audio sample rate in Hz
     
     # Device Allocations
-    dev0: str = "cuda:0"            # GPU 0: Text Encoder + Backbone
-    dev1: str = "cuda:1"            # GPU 1: Depth Decoder + Neural Vocoder
+    dev0: str = "cuda:0"            # GPU 0: Text Encoder + Backbone + Station A Depth + Vocoder
+    dev1: str = "cuda:1"            # GPU 1: Station B Depth
+    vocoder_dev: str = "cuda:0"     # Neural vocoder placed on GPU 0 to offload GPU 1
+    enable_dual_depth: bool = True  # Station A on dev0, Station B on dev1
     
     # Model Weights & Precision
     model_id: str = "BreezeBlue/Breeze-TTS-2"
