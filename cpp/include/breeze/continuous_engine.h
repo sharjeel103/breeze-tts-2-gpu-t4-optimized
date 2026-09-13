@@ -85,7 +85,7 @@ private:
     std::thread m_worker;
 
     void step_loop();
-    bool init_slot(EngineSlot & slot, const GenRequest & req, const AudioCallback & cb);
+    bool init_slot(EngineSlot & slot, const GenRequest & req, const AudioCallback & cb, bool prefer_overload = false);
     bool flush_slot_audio(EngineSlot & slot, bool final_flush);
 };
 

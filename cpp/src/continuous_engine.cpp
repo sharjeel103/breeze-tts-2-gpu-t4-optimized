@@ -163,7 +163,7 @@ int ContinuousEngine::queue_depth() const {
     return (int) m_queue.size();
 }
 
-bool ContinuousEngine::init_slot(EngineSlot & slot, const GenRequest & req, const AudioCallback & cb) {
+bool ContinuousEngine::init_slot(EngineSlot & slot, const GenRequest & req, const AudioCallback & cb, bool prefer_overload) {
     slot.req = req;
     slot.cb = cb;
     slot.start_time = std::chrono::steady_clock::now();
@@ -173,8 +173,7 @@ bool ContinuousEngine::init_slot(EngineSlot & slot, const GenRequest & req, cons
     slot.hist.clear();
     slot.suppress.clear();
 
-    const bool prefer_overload = m_has_overload && (queue_depth() > 3);
-    slot.using_overload = prefer_overload;
+    slot.using_overload = m_has_overload && prefer_overload;
     BreezeModel & model = slot.using_overload ? m_model_overload : m_model;
     MimiCodec & codec = slot.using_overload ? m_codec_overload : m_codec;
 
@@ -222,6 +221,9 @@ bool ContinuousEngine::init_slot(EngineSlot & slot, const GenRequest & req, cons
     std::vector<float> comb = eng_combine_logits(slot.o_c.logits, slot.o_u.logits, slot.use_cfg, req.cfg_scale);
     slot.cb0 = sample_token(comb, slot.bp, slot.rng, &slot.hist, &slot.suppress);
     slot.active = true;
+    printf("[Engine %d] Slot %d admitted & prefilled (model: %s, prompt tokens: %d)\n",
+           m_device_id, slot.id, slot.using_overload ? "overload_dd4" : "baseline_q8", total_c);
+    fflush(stdout);
     return true;
 }
 
@@ -253,7 +255,14 @@ bool ContinuousEngine::flush_slot_audio(EngineSlot & slot, bool final_flush) {
 
 void ContinuousEngine::step_loop() {
     while (m_running.load()) {
-        std::vector<EngineSlot*> active;
+        struct PendingInit {
+            EngineSlot * slot;
+            GenRequest req;
+            AudioCallback cb;
+            bool overload;
+        };
+        std::vector<PendingInit> to_init;
+
         {
             std::unique_lock<std::mutex> lock(m_mutex);
             // Check if all slots are idle and queue is empty
@@ -270,7 +279,8 @@ void ContinuousEngine::step_loop() {
             }
             if (!m_running.load()) break;
 
-            // Admit waiting requests into free slots
+            // Pop waiting requests into free slots
+            const bool prefer_overload = m_has_overload && (m_queue.size() > 3);
             while (!m_queue.empty()) {
                 EngineSlot * free_slot = nullptr;
                 for (auto & s : m_slot_pool) {
@@ -278,14 +288,25 @@ void ContinuousEngine::step_loop() {
                 }
                 if (!free_slot) break; // All slots full
 
+                // Reserve slot so next queue item finds another slot
+                free_slot->active = true;
                 auto item = m_queue.front();
                 m_queue.pop();
-                init_slot(*free_slot, item.first, item.second);
+                to_init.push_back({free_slot, item.first, item.second, prefer_overload});
             }
+        }
 
-            // Gather active slots for this step
+        // Initialize new slots outside the mutex lock
+        for (auto & pi : to_init) {
+            init_slot(*pi.slot, pi.req, pi.cb, pi.overload);
+        }
+
+        // Gather active slots for this step
+        std::vector<EngineSlot*> active;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
             for (auto & s : m_slot_pool) {
-                if (s.active) active.push_back(&s);
+                if (s.active && s.cb0 >= 0) active.push_back(&s);
             }
         }
 
@@ -324,6 +345,9 @@ void ContinuousEngine::step_loop() {
             if (s->cb0 == model.cfg.backbone_eos_token_id || s->step >= s->max_new) {
                 flush_slot_audio(*s, true);
                 s->cb(nullptr, 0); // signal stream completion
+                printf("[Engine %d] Slot %d completed: %d steps, %zu total frames\n",
+                       m_device_id, s->id, s->step, s->frames.size() / model.cfg.num_codebooks);
+                fflush(stdout);
                 std::lock_guard<std::mutex> lock(m_mutex);
                 s->cleanup();
             }

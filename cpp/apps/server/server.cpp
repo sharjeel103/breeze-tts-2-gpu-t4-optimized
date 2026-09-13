@@ -177,27 +177,24 @@ int run_server(const ServerOptions & opts) {
         res.set_chunked_content_provider(
             "audio/pcm",
             [sq](size_t, httplib::DataSink & sink) -> bool {
-                while (true) {
-                    std::vector<uint8_t> chunk;
-                    {
-                        std::unique_lock<std::mutex> lock(sq->mtx);
-                        while (sq->chunks.empty() && !sq->finished) {
-                            sq->cv.wait(lock);
-                        }
-                        if (!sq->chunks.empty()) {
-                            chunk = std::move(sq->chunks.front());
-                            sq->chunks.pop();
-                        } else if (sq->finished) {
-                            sink.done();
-                            return true;
-                        }
+                std::vector<uint8_t> chunk;
+                {
+                    std::unique_lock<std::mutex> lock(sq->mtx);
+                    while (sq->chunks.empty() && !sq->finished) {
+                        sq->cv.wait(lock);
                     }
-                    if (!chunk.empty()) {
-                        if (!sink.write((const char *) chunk.data(), chunk.size())) {
-                            return false; // client disconnected
-                        }
+                    if (!sq->chunks.empty()) {
+                        chunk = std::move(sq->chunks.front());
+                        sq->chunks.pop();
+                    } else if (sq->finished) {
+                        sink.done();
+                        return true;
                     }
                 }
+                if (!chunk.empty()) {
+                    return sink.write((const char *) chunk.data(), chunk.size());
+                }
+                return true;
             });
     });
 
