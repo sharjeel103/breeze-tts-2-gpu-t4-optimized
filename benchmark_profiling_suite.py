@@ -149,7 +149,7 @@ async def run_client_task(
         request_id=req_id,
         text=text,
         instruction=instruction,
-        guidance_scale=4.0,
+        guidance_scale=engine.config.guidance_scale,
         max_frames=engine.config.max_seq_len,
     ):
         if item.get("type") == "admitted":
@@ -281,7 +281,7 @@ async def main():
     print("🚀 BREEZE TTS 2: SYMMETRICAL DUAL-ENGINE CLUSTER & 15-REQUEST HARD LIMIT BENCHMARK")
     print("*" * 90)
     
-    cfg = EngineConfig(max_seq_len=2560, chunk_size=5)
+    cfg = EngineConfig(max_seq_len=2560, chunk_size=8, guidance_scale=1.0)
     engine = AssemblyPipelineEngine(cfg)
     engine.initialize()
     

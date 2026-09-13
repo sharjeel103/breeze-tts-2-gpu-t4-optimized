@@ -131,12 +131,13 @@ class AsyncPrefillWorker:
                     input_values = None
             else:
                 cond_ids = inputs['input_ids'].to(self.dev0)
-                input_ids = cond_ids.repeat(2, 1)
-                attention_mask = inputs['attention_mask'].to(self.dev0).repeat(2, 1)
-                text_ids_mask = inputs['text_ids_mask'].to(self.dev0).repeat(2, 1)
-                text_ids_len = inputs['text_ids_len'].to(self.dev0).repeat(2)
+                bsz = 2 if effective_cfg > 1.0 else 1
+                input_ids = cond_ids.repeat(bsz, 1) if bsz > 1 else cond_ids
+                attention_mask = inputs['attention_mask'].to(self.dev0).repeat(bsz, 1) if bsz > 1 else inputs['attention_mask'].to(self.dev0)
+                text_ids_mask = inputs['text_ids_mask'].to(self.dev0).repeat(bsz, 1) if bsz > 1 else inputs['text_ids_mask'].to(self.dev0)
+                text_ids_len = inputs['text_ids_len'].to(self.dev0).repeat(bsz) if bsz > 1 else inputs['text_ids_len'].to(self.dev0)
                 if inputs.get('input_values') is not None:
-                    input_values = inputs['input_values'].to(self.dev0).repeat(2, 1, 1)
+                    input_values = inputs['input_values'].to(self.dev0).repeat(bsz, 1, 1) if bsz > 1 else inputs['input_values'].to(self.dev0)
                 else:
                     input_values = None
                     
@@ -164,9 +165,12 @@ class AsyncPrefillWorker:
             logits = self.model.lm_head(hidden[:, -1, :].float()).float()
             
             # Apply initial CFG to get initial token
-            cond_logits = logits[:1]
-            uncond_logits = logits[1:]
-            guided_logits = uncond_logits + effective_cfg * (cond_logits - uncond_logits)
+            if has_negative:
+                cond_logits = logits[:1]
+                uncond_logits = logits[1:]
+                guided_logits = uncond_logits + effective_cfg * (cond_logits - uncond_logits)
+            else:
+                guided_logits = logits[:1]
             
             from models.cudagraph.sampling import sample_logits
             token = sample_logits(

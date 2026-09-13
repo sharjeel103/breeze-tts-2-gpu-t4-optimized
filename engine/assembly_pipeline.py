@@ -244,11 +244,13 @@ class AssemblyPipelineEngine:
         self.vocoder_worker.warmup()
         
         # 7. Initialize Station A and Station B CUDA Graphs
-        print("-> Capturing Static CUDA Graphs for Symmetrical Dual Engines...")
+        self.batch_size = 2 if self.config.guidance_scale > 1.0 else 1
+        self.bucket_sizes = [self.batch_size]
+        print(f"-> Capturing Static CUDA Graphs (batch_size={self.batch_size}, CFG={'Enabled' if self.batch_size == 2 else 'Fastpath Disabled'})...")
         depth_gen = self.model.depth_decoder.generation_config
         
         # Station A Graphs (on cuda:0)
-        print("  [Station A (cuda:0)] Capturing Backbone Graph (batch=2)...")
+        print(f"  [Station A (cuda:0)] Capturing Backbone Graph (batch={self.batch_size})...")
         bg_a = BackboneGraph(
             backbone_model=self.model.backbone_model,
             lm_head=self.model.lm_head,
@@ -257,12 +259,12 @@ class AssemblyPipelineEngine:
             device=self.dev0,
             dtype=self.config.dtype,
             max_seq_len=self.config.max_seq_len,
-            batch_size=2,
+            batch_size=self.batch_size,
             guidance_scale=self.config.guidance_scale,
         )
         bg_a.capture(prefill_len=64)
 
-        print("  [Station A (cuda:0)] Capturing Depth Decoder Graph (batch=2)...")
+        print(f"  [Station A (cuda:0)] Capturing Depth Decoder Graph (batch={self.batch_size})...")
         dg_a = DepthDecoderGraph(
             depth_decoder=self.model.depth_decoder,
             config=self.model.config.depth_decoder_config,
@@ -272,8 +274,8 @@ class AssemblyPipelineEngine:
             num_codebooks=int(self.model.config.num_codebooks),
             codec_codebook_size=int(self.model.config.codec_config.codebook_size),
             fast=False,
-            batch_size=2,
-            bucket_sizes=[2],
+            batch_size=self.batch_size,
+            bucket_sizes=self.bucket_sizes,
             temperature=float(getattr(depth_gen, 'temperature', 0.9)),
             top_k=int(getattr(depth_gen, 'top_k', 50)),
             top_p=float(getattr(depth_gen, 'top_p', 1.0)),
@@ -282,7 +284,7 @@ class AssemblyPipelineEngine:
         dg_a.capture()
 
         # Station B Graphs (on cuda:1)
-        print("  [Station B (cuda:1)] Capturing Backbone Graph (batch=2)...")
+        print(f"  [Station B (cuda:1)] Capturing Backbone Graph (batch={self.batch_size})...")
         bg_b = BackboneGraph(
             backbone_model=self.backbone_dev1,
             lm_head=self.lm_head_dev1,
@@ -291,12 +293,12 @@ class AssemblyPipelineEngine:
             device=self.dev1,
             dtype=self.config.dtype,
             max_seq_len=self.config.max_seq_len,
-            batch_size=2,
+            batch_size=self.batch_size,
             guidance_scale=self.config.guidance_scale,
         )
         bg_b.capture(prefill_len=64)
 
-        print("  [Station B (cuda:1)] Capturing Depth Decoder Graph (batch=2)...")
+        print(f"  [Station B (cuda:1)] Capturing Depth Decoder Graph (batch={self.batch_size})...")
         dg_b = DepthDecoderGraph(
             depth_decoder=self.depth_dev1,
             config=self.model.config.depth_decoder_config,
@@ -306,8 +308,8 @@ class AssemblyPipelineEngine:
             num_codebooks=int(self.model.config.num_codebooks),
             codec_codebook_size=int(self.model.config.codec_config.codebook_size),
             fast=False,
-            batch_size=2,
-            bucket_sizes=[2],
+            batch_size=self.batch_size,
+            bucket_sizes=self.bucket_sizes,
             temperature=float(getattr(depth_gen, 'temperature', 0.9)),
             top_k=int(getattr(depth_gen, 'top_k', 50)),
             top_p=float(getattr(depth_gen, 'top_p', 1.0)),
@@ -323,9 +325,9 @@ class AssemblyPipelineEngine:
             backbone_graph=bg_a,
             depth_graph=dg_a,
             max_frames=self.config.max_seq_len,
-            hidden_buf=torch.zeros((2, 1, self.model.config.hidden_size), device=self.dev0, dtype=self.config.dtype),
-            token_buf=torch.zeros(2, device=self.dev0, dtype=torch.long),
-            frame_buf=torch.zeros((2, 1, 16), device=self.dev0, dtype=torch.long),
+            hidden_buf=torch.zeros((self.batch_size, 1, self.model.config.hidden_size), device=self.dev0, dtype=self.config.dtype),
+            token_buf=torch.zeros(self.batch_size, device=self.dev0, dtype=torch.long),
+            frame_buf=torch.zeros((self.batch_size, 1, 16), device=self.dev0, dtype=torch.long),
         )
         self.stations.append(stA)
 
@@ -337,9 +339,9 @@ class AssemblyPipelineEngine:
             backbone_graph=bg_b,
             depth_graph=dg_b,
             max_frames=self.config.max_seq_len,
-            hidden_buf=torch.zeros((2, 1, self.model.config.hidden_size), device=self.dev1, dtype=self.config.dtype),
-            token_buf=torch.zeros(2, device=self.dev1, dtype=torch.long),
-            frame_buf=torch.zeros((2, 1, 16), device=self.dev1, dtype=torch.long),
+            hidden_buf=torch.zeros((self.batch_size, 1, self.model.config.hidden_size), device=self.dev1, dtype=self.config.dtype),
+            token_buf=torch.zeros(self.batch_size, device=self.dev1, dtype=torch.long),
+            frame_buf=torch.zeros((self.batch_size, 1, 16), device=self.dev1, dtype=torch.long),
         )
         self.stations.append(stB)
 
@@ -394,7 +396,7 @@ class AssemblyPipelineEngine:
                 
                 # Initial token and hidden
                 idle_station.hidden_buf.copy_(prefilled.initial_hidden[:, -1:, :].to(idle_station.device))
-                idle_station.token_buf.copy_(prefilled.initial_token.view(-1).repeat(2).to(idle_station.device))
+                idle_station.token_buf.copy_(prefilled.initial_token.view(-1).repeat(self.batch_size).to(idle_station.device))
                 
                 print(f"[AssemblyLine] Station {station_name} Admitted: Req={prefilled.request_id} ('{prefilled.prompt_text[:25]}...')", flush=True)
             except Exception as e:
@@ -439,7 +441,7 @@ class AssemblyPipelineEngine:
                     stA.depth_step += 1
 
                     # Backbone Step
-                    stA.frame_buf.copy_(frame_a.view(1, 1, 16).repeat(2, 1, 1))
+                    stA.frame_buf.copy_(frame_a.view(1, 1, 16).repeat(self.batch_size, 1, 1))
                     h_a_next, logits_a = stA.backbone_graph.run(stA.frame_buf, step_idx=stA.bb_step)
                     tok_a = sample_logits(
                         logits_a.float(),
@@ -449,7 +451,7 @@ class AssemblyPipelineEngine:
                         top_p=self.config.top_p,
                         do_sample=self.config.do_sample,
                     ).view(1)
-                    stA.token_buf.copy_(tok_a.repeat(2))
+                    stA.token_buf.copy_(tok_a.repeat(self.batch_size))
                     stA.hidden_buf.copy_(h_a_next[:, -1:, :])
                     stA.bb_step += 1
 
@@ -479,7 +481,7 @@ class AssemblyPipelineEngine:
                     stB.depth_step += 1
 
                     # Backbone Step
-                    stB.frame_buf.copy_(frame_b.view(1, 1, 16).repeat(2, 1, 1))
+                    stB.frame_buf.copy_(frame_b.view(1, 1, 16).repeat(self.batch_size, 1, 1))
                     h_b_next, logits_b = stB.backbone_graph.run(stB.frame_buf, step_idx=stB.bb_step)
                     tok_b = sample_logits(
                         logits_b.float(),
@@ -489,7 +491,7 @@ class AssemblyPipelineEngine:
                         top_p=self.config.top_p,
                         do_sample=self.config.do_sample,
                     ).view(1)
-                    stB.token_buf.copy_(tok_b.repeat(2))
+                    stB.token_buf.copy_(tok_b.repeat(self.batch_size))
                     stB.hidden_buf.copy_(h_b_next[:, -1:, :])
                     stB.bb_step += 1
 
