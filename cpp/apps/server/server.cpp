@@ -75,6 +75,8 @@ int run_server(const ServerOptions & opts) {
     }
 
     httplib::Server svr;
+    const int pool_size = std::max(32, opts.max_slots * (opts.dual_gpu ? 2 : 1) + 8);
+    svr.new_task_queue = [pool_size] { return new httplib::ThreadPool(pool_size); };
     auto mutex = std::make_shared<std::mutex>();
 
     VoiceStore store;
