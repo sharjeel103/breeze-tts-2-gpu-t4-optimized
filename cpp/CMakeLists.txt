@@ -48,6 +48,7 @@ set(BREEZE_SOURCES
     src/text_split.cpp
     src/voice.cpp
     src/model.cpp
+    src/continuous_engine.cpp
 )
 
 add_library(breeze_core STATIC ${BREEZE_SOURCES})

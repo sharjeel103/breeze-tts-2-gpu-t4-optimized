@@ -16,8 +16,9 @@ struct Backend {
     ggml_backend_t backend = nullptr;
     ggml_gallocr_t alloc = nullptr;
     bool is_gpu = false;
+    int device_id = 0;
 
-    void init(bool prefer_gpu);
+    void init(bool prefer_gpu, int device_id = 0);
     void free();
     const char * name() const;
 };

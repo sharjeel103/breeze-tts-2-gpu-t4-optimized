@@ -4,6 +4,7 @@
 #include "ws_api.h"
 
 #include "breeze/audio.h"
+#include "breeze/continuous_engine.h"
 #include "breeze/generation.h"
 #include "breeze/model.h"
 
@@ -50,18 +51,37 @@ int run_server(const ServerOptions & opts) {
     SetConsoleOutputCP(CP_UTF8); // otherwise the bar glyphs and any chinese text come out as mojibake
 #endif
     BreezeModel model;
-    printf("loading %s ...\n", opts.model.c_str());
-    if (!model.load(opts.model, opts.use_gpu)) {
+    printf("loading voice store model %s ...\n", opts.model.c_str());
+    if (!model.load(opts.model, opts.use_gpu, 0)) {
         fprintf(stderr, "failed to load model\n");
         return 1;
     }
-    printf("backend: %s, sample rate: %d\n", model.backend.name(), model.cfg.sample_rate);
+    const int sr = model.cfg.sample_rate;
     MimiCodec codec;
     codec.init(model);
 
+    std::vector<std::unique_ptr<ContinuousEngine>> engines;
+    engines.push_back(std::make_unique<ContinuousEngine>(0, opts.max_slots));
+    if (!engines[0]->load_model(opts.model, opts.overload_model)) {
+        fprintf(stderr, "failed to load engine 0\n");
+        return 1;
+    }
+    engines[0]->start();
+
+    if (opts.dual_gpu) {
+        printf("Initializing Station B on GPU 1 (CUDA1) ...\n");
+        auto eng1 = std::make_unique<ContinuousEngine>(1, opts.max_slots);
+        if (eng1->load_model(opts.model, opts.overload_model)) {
+            eng1->start();
+            engines.push_back(std::move(eng1));
+            printf("Station B on GPU 1 online and active!\n");
+        } else {
+            fprintf(stderr, "Warning: failed to load Station B on GPU 1, running single GPU\n");
+        }
+    }
+
     httplib::Server svr;
     auto mutex = std::make_shared<std::mutex>();
-    const int sr = model.cfg.sample_rate;
 
     VoiceStore store;
     store.load_dir(opts.voices_dir, model.cfg.num_codebooks);
@@ -78,18 +98,20 @@ int run_server(const ServerOptions & opts) {
     }
 
     svr.Get("/health", [&](const httplib::Request &, httplib::Response & res) {
+        int active = 0, queued = 0;
+        for (auto & e : engines) {
+            active += e->active_slots_count();
+            queued += e->queue_depth();
+        }
         res.set_content("{\"status\":\"ok\",\"sample_rate\":" + std::to_string(sr) +
+                        ",\"gpus\":" + std::to_string(engines.size()) +
+                        ",\"active_slots\":" + std::to_string(active) +
+                        ",\"queued_requests\":" + std::to_string(queued) +
                         ",\"ws_port\":" + std::to_string(ws_port > 0 ? ws_port : 0) + "}",
                         "application/json");
     });
 
-    svr.Post("/v1/audio/speech", [&, mutex](const httplib::Request & req, httplib::Response & res) {
-        auto lock = std::make_shared<std::unique_lock<std::mutex>>(*mutex, std::try_to_lock);
-        if (!*lock) {
-            res.status = 409;
-            res.set_content("{\"error\":\"busy\"}", "application/json");
-            return;
-        }
+    svr.Post("/v1/audio/speech", [&](const httplib::Request & req, httplib::Response & res) {
         GenRequest g;
         g.text = field(req, "text", "");
         g.instruction = field(req, "instruction", "Speak clearly and naturally.");
@@ -125,55 +147,63 @@ int run_server(const ServerOptions & opts) {
         res.set_header("X-Sample-Format", "s16le");
         res.set_header("Cache-Control", "no-store");
 
-        const bool sent_ins = req.has_file("instruction") || req.has_param("instruction");
-        const char * mode = !g.ref_audio.empty() ? (sent_ins ? "direction" : "clone") : "design";
-        printf("gen  %s, %d chars, cfg %.1f, seed %d\n", mode, (int) g.text.size(), g.cfg_scale, g.seed);
+        // Select engine with lower load
+        ContinuousEngine * eng = engines[0].get();
+        if (engines.size() > 1) {
+            int load0 = engines[0]->active_slots_count() + engines[0]->queue_depth();
+            int load1 = engines[1]->active_slots_count() + engines[1]->queue_depth();
+            eng = (load0 <= load1) ? engines[0].get() : engines[1].get();
+        }
+
+        printf("[Route] Dispatching request (%d chars) to GPU %d (load: %d active, %d queued)\n",
+               (int) g.text.size(), eng->device_id(), eng->active_slots_count(), eng->queue_depth());
         fflush(stdout);
+
+        struct StreamQueue {
+            std::mutex mtx;
+            std::condition_variable cv;
+            std::queue<std::vector<uint8_t>> chunks;
+            bool finished = false;
+        };
+        auto sq = std::make_shared<StreamQueue>();
+
+        eng->enqueue(g, [sq](const float * s, int n) -> bool {
+            std::lock_guard<std::mutex> lock(sq->mtx);
+            if (s == nullptr || n == 0) {
+                sq->finished = true;
+                sq->cv.notify_one();
+                return true;
+            }
+            std::vector<uint8_t> pcm = to_pcm16(s, n);
+            sq->chunks.push(std::move(pcm));
+            sq->cv.notify_one();
+            return true;
+        });
 
         res.set_chunked_content_provider(
             "audio/pcm",
-            [&model, &codec, g, lock, sr, verbose = opts.verbose](size_t, httplib::DataSink & sink) {
-                GenTimings tm;
-                const auto t0 = std::chrono::steady_clock::now();
-                const auto elapsed = [&] {
-                    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-                };
-                // the model decides when to stop, so the total is only ever an estimate
-                const double est = estimate_seconds(g.text);
-                size_t total = 0;
-                try {
-                    generate(model, codec, g, [&](const float * s, int n) {
-                        std::vector<uint8_t> pcm = to_pcm16(s, n);
-                        if (!sink.write((const char *) pcm.data(), pcm.size())) return false;
-                        total += (size_t) n;
-                        const double secs = (double) total / sr, wall = elapsed();
-                        const double rate = wall > 0 ? secs / wall : 0;
-                        const double frac = est > 0 ? secs / est : 0;
-                        const double eta = rate > 0 ? (est > secs ? (est - secs) / rate : 0) : 0;
-                        printf("\r%3.0f%%|%s| %.1f/%.1fs [%s<%s, %.1f fps, %.2fx]  ",
-                               (frac < 1 ? frac : 1) * 100, bar(frac, 24).c_str(), secs, est,
-                               mmss(wall).c_str(), mmss(eta).c_str(), secs * 12.5 / wall, rate);
-                        fflush(stdout);
-                        return true;
-                    }, &tm);
-                } catch (const std::exception & e) {
-                    fprintf(stderr, "\ngeneration error: %s\n", e.what());
+            [sq](size_t, httplib::DataSink & sink) -> bool {
+                while (true) {
+                    std::vector<uint8_t> chunk;
+                    {
+                        std::unique_lock<std::mutex> lock(sq->mtx);
+                        while (sq->chunks.empty() && !sq->finished) {
+                            sq->cv.wait(lock);
+                        }
+                        if (!sq->chunks.empty()) {
+                            chunk = std::move(sq->chunks.front());
+                            sq->chunks.pop();
+                        } else if (sq->finished) {
+                            sink.done();
+                            return true;
+                        }
+                    }
+                    if (!chunk.empty()) {
+                        if (!sink.write((const char *) chunk.data(), chunk.size())) {
+                            return false; // client disconnected
+                        }
+                    }
                 }
-                const double secs = (double) total / sr, wall = elapsed();
-                printf("\r%3.0f%%|%s| %.1f/%.1fs [%s, %.1f fps, %.2fx]        \n",
-                       100.0, bar(1, 24).c_str(), secs, secs, mmss(wall).c_str(),
-                       wall > 0 ? secs * 12.5 / wall : 0.0, wall > 0 ? secs / wall : 0.0);
-                printf("     %d frames in %d flushes, first audio %.0f ms\n",
-                       tm.frames, tm.flushes, tm.first_audio);
-                if (verbose && tm.frames > 0) {
-                    printf("     ref %.0f  prompt %.0f  prefill %.0f ms | per frame: backbone %.2f"
-                           "  depth %.2f  vocoder %.2f ms\n",
-                           tm.encode_ref, tm.prompt, tm.prefill, tm.backbone / tm.frames,
-                           tm.depth / tm.frames, tm.vocoder / tm.frames);
-                }
-                fflush(stdout);
-                sink.done();
-                return true;
             });
     });
 

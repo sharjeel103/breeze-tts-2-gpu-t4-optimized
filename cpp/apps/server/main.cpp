@@ -37,6 +37,9 @@ int main(int argc, char ** argv) {
         else if (a == "--chunk-first" && i + 1 < argc) opts.chunk_first = atoi(argv[++i]);
         else if (a == "--chunk-max" && i + 1 < argc) opts.chunk_max = atoi(argv[++i]);
         else if (a == "--split-chars" && i + 1 < argc) opts.split_chars = atoi(argv[++i]);
+        else if (a == "--dual-gpu") opts.dual_gpu = true;
+        else if (a == "--overload-model" && i + 1 < argc) opts.overload_model = argv[++i];
+        else if (a == "--max-slots" && i + 1 < argc) opts.max_slots = atoi(argv[++i]);
         else { fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 1; }
     }
     if (opts.split_chars < 0) opts.split_chars = 0;

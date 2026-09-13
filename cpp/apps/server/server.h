@@ -16,6 +16,9 @@ struct ServerOptions {
     int chunk_first = 4;
     int chunk_max = 25;
     int split_chars = 600; // 0 keeps long text in a single pass
+    std::string overload_model = "";
+    bool dual_gpu = false;
+    int max_slots = 16;
 };
 
 int run_server(const ServerOptions & opts);

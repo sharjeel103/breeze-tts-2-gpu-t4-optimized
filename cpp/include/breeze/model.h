@@ -16,7 +16,7 @@ struct BreezeModel {
     BreezeConfig cfg;
     Tokenizer tok;
 
-    bool load(const std::string & path, bool prefer_gpu);
+    bool load(const std::string & path, bool prefer_gpu, int device_id = 0);
     void free();
 
     ggml_tensor * w(const std::string & name) const { return gg.get(name); }

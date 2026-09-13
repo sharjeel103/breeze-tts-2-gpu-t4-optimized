@@ -4,12 +4,23 @@
 #include <cmath>
 #include <cstring>
 
+#if defined(GGML_USE_CUDA)
+#include "ggml-cuda.h"
+#endif
+
 namespace breeze {
 
-void Backend::init(bool prefer_gpu) {
+void Backend::init(bool prefer_gpu, int dev) {
+    device_id = dev;
     if (prefer_gpu) {
-        backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
+#if defined(GGML_USE_CUDA)
+        backend = ggml_backend_cuda_init(dev);
         is_gpu = backend != nullptr;
+#endif
+        if (!backend) {
+            backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
+            is_gpu = backend != nullptr;
+        }
     }
     if (!backend) {
         backend = ggml_backend_cpu_init();
