@@ -10,6 +10,7 @@ import gc
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
@@ -174,6 +175,9 @@ class AssemblyPipelineEngine:
         
         self.stations: List[Station] = []
         self._reserved_tokens = [0, 1, 2, 3]
+        
+        # Dual-GPU simultaneous hardware concurrency pool
+        self.thread_pool = ThreadPoolExecutor(max_workers=2)
 
     def initialize(self):
         print("=" * 65)
@@ -405,99 +409,72 @@ class AssemblyPipelineEngine:
                 traceback.print_exc()
                 idle_station.is_active = False
 
+    def _execute_station_step(self, st: Station, stream: torch.cuda.Stream):
+        with torch.cuda.device(st.device), torch.cuda.stream(stream):
+            # Depth Step
+            h = st.hidden_buf[:, 0, :]
+            depth_toks = st.depth_graph.run(h, st.token_buf, guidance_scale=st.effective_cfg, temperature=0.8)
+            frame = torch.cat([st.token_buf[:1].view(1), depth_toks[0]], dim=0)
+            st.chunk_buffer.append(frame.detach())
+            st.total_frames_generated += 1
+            st.depth_step += 1
+
+            # Backbone Step
+            st.frame_buf.copy_(frame.view(1, 1, 16).repeat(self.batch_size, 1, 1))
+            h_next, logits = st.backbone_graph.run(st.frame_buf, step_idx=st.bb_step)
+            tok = sample_logits(
+                logits.float(),
+                suppress_tokens=self._reserved_tokens,
+                temperature=self.config.temperature,
+                top_k=self.config.top_k,
+                top_p=self.config.top_p,
+                do_sample=self.config.do_sample,
+            ).view(1)
+            st.token_buf.copy_(tok.repeat(self.batch_size))
+            st.hidden_buf.copy_(h_next[:, -1:, :])
+            st.bb_step += 1
+        stream.synchronize()
+
     @torch.inference_mode()
     def step_assembly(self) -> int:
         """
         Executes one Symmetrical Parallel cycle across both physical GPUs:
         Station A computes Backbone + Depth on GPU 0 || Station B computes Backbone + Depth on GPU 1.
-        Zero cross-GPU synchronization or DMA transfers during generation!
+        Uses thread pool for true simultaneous hardware concurrency on both GPUs (zero cross-GPU contention).
         """
         stA = self.stations[0]
         stB = self.stations[1]
 
         # -------------------------------------------------------------
-        # 1. Station A Step on GPU 0 Stream
+        # 1. Termination checks for active stations
         # -------------------------------------------------------------
-        if stA.is_active:
-            hit_eos_a = is_backbone_eos_token(stA.token_buf[:1], self.model.config)
-            hit_max_a = stA.depth_step >= stA.max_frames or (stA.prefill_len + stA.depth_step) >= (self.config.max_seq_len - 1)
-            if hit_eos_a or hit_max_a:
-                stA.is_active = False
-                dur = stA.total_frames_generated * 0.08
-                print(f"[AssemblyLine] Station A Finished ({'EOS' if hit_eos_a else 'Max'}): Req={stA.request_id} | Frames={stA.total_frames_generated} ({dur:.2f}s audio)")
-                chunk = list(stA.chunk_buffer)
-                stA.chunk_buffer.clear()
-                if stA.audio_queue is not None:
-                    asyncio.create_task(self.vocoder_worker.emit_chunk(stA.audio_queue, chunk, is_final=True))
-                stA.request_id = None
-            else:
-                with torch.cuda.device(stA.device), torch.cuda.stream(self.stream_A):
-                    # Depth Step
-                    h_a = stA.hidden_buf[:, 0, :]
-                    depth_toks_a = stA.depth_graph.run(h_a, stA.token_buf, guidance_scale=stA.effective_cfg, temperature=0.8)
-                    frame_a = torch.cat([stA.token_buf[:1].view(1), depth_toks_a[0]], dim=0)
-                    stA.chunk_buffer.append(frame_a.detach())
-                    stA.total_frames_generated += 1
-                    stA.depth_step += 1
-
-                    # Backbone Step
-                    stA.frame_buf.copy_(frame_a.view(1, 1, 16).repeat(self.batch_size, 1, 1))
-                    h_a_next, logits_a = stA.backbone_graph.run(stA.frame_buf, step_idx=stA.bb_step)
-                    tok_a = sample_logits(
-                        logits_a.float(),
-                        suppress_tokens=self._reserved_tokens,
-                        temperature=self.config.temperature,
-                        top_k=self.config.top_k,
-                        top_p=self.config.top_p,
-                        do_sample=self.config.do_sample,
-                    ).view(1)
-                    stA.token_buf.copy_(tok_a.repeat(self.batch_size))
-                    stA.hidden_buf.copy_(h_a_next[:, -1:, :])
-                    stA.bb_step += 1
+        for st in (stA, stB):
+            if st.is_active:
+                hit_eos = is_backbone_eos_token(st.token_buf[:1], self.model.config)
+                hit_max = st.depth_step >= st.max_frames or (st.prefill_len + st.depth_step) >= (self.config.max_seq_len - 1)
+                if hit_eos or hit_max:
+                    st.is_active = False
+                    dur = st.total_frames_generated * 0.08
+                    name = "A" if st.station_id == 0 else "B"
+                    print(f"[AssemblyLine] Station {name} Finished ({'EOS' if hit_eos else 'Max'}): Req={st.request_id} | Frames={st.total_frames_generated} ({dur:.2f}s audio)")
+                    chunk = list(st.chunk_buffer)
+                    st.chunk_buffer.clear()
+                    if st.audio_queue is not None:
+                        asyncio.create_task(self.vocoder_worker.emit_chunk(st.audio_queue, chunk, is_final=True))
+                    st.request_id = None
 
         # -------------------------------------------------------------
-        # 2. Station B Step on GPU 1 Stream (Concurrent with Station A!)
+        # 2. Concurrently step active stations via ThreadPool
         # -------------------------------------------------------------
-        if stB.is_active:
-            hit_eos_b = is_backbone_eos_token(stB.token_buf[:1], self.model.config)
-            hit_max_b = stB.depth_step >= stB.max_frames or (stB.prefill_len + stB.depth_step) >= (self.config.max_seq_len - 1)
-            if hit_eos_b or hit_max_b:
-                stB.is_active = False
-                dur = stB.total_frames_generated * 0.08
-                print(f"[AssemblyLine] Station B Finished ({'EOS' if hit_eos_b else 'Max'}): Req={stB.request_id} | Frames={stB.total_frames_generated} ({dur:.2f}s audio)")
-                chunk = list(stB.chunk_buffer)
-                stB.chunk_buffer.clear()
-                if stB.audio_queue is not None:
-                    asyncio.create_task(self.vocoder_worker.emit_chunk(stB.audio_queue, chunk, is_final=True))
-                stB.request_id = None
-            else:
-                with torch.cuda.device(stB.device), torch.cuda.stream(self.stream_B):
-                    # Depth Step
-                    h_b = stB.hidden_buf[:, 0, :]
-                    depth_toks_b = stB.depth_graph.run(h_b, stB.token_buf, guidance_scale=stB.effective_cfg, temperature=0.8)
-                    frame_b = torch.cat([stB.token_buf[:1].view(1), depth_toks_b[0]], dim=0)
-                    stB.chunk_buffer.append(frame_b.detach())
-                    stB.total_frames_generated += 1
-                    stB.depth_step += 1
-
-                    # Backbone Step
-                    stB.frame_buf.copy_(frame_b.view(1, 1, 16).repeat(self.batch_size, 1, 1))
-                    h_b_next, logits_b = stB.backbone_graph.run(stB.frame_buf, step_idx=stB.bb_step)
-                    tok_b = sample_logits(
-                        logits_b.float(),
-                        suppress_tokens=self._reserved_tokens,
-                        temperature=self.config.temperature,
-                        top_k=self.config.top_k,
-                        top_p=self.config.top_p,
-                        do_sample=self.config.do_sample,
-                    ).view(1)
-                    stB.token_buf.copy_(tok_b.repeat(self.batch_size))
-                    stB.hidden_buf.copy_(h_b_next[:, -1:, :])
-                    stB.bb_step += 1
-
-        # Synchronize streams
-        self.stream_A.synchronize()
-        self.stream_B.synchronize()
+        if stA.is_active and stB.is_active:
+            futA = self.thread_pool.submit(self._execute_station_step, stA, self.stream_A)
+            futB = self.thread_pool.submit(self._execute_station_step, stB, self.stream_B)
+            futA.result()
+            futB.result()
+        elif stA.is_active:
+            self._execute_station_step(stA, self.stream_A)
+        elif stB.is_active:
+            self._execute_station_step(stB, self.stream_B)
 
         # -------------------------------------------------------------
         # 3. Periodic Chunk Emission for Active Stations
@@ -542,6 +519,7 @@ class AssemblyPipelineEngine:
         finally:
             self.prefill_worker.running = False
             prefill_task.cancel()
+            self.thread_pool.shutdown(wait=False)
 
     async def submit_request(
         self,
