@@ -9,18 +9,22 @@ using namespace breeze;
 int main(int argc, char ** argv) {
     if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
         printf("usage: breeze-server <model.gguf> [--host H] [--port P] [--webui] [--cpu]\n");
+        printf("                     [--dual-gpu] [--overload-model M] [--max-slots N]\n");
         printf("                     [--chunk-first N] [--chunk-max N] [--verbose]\n");
         printf("                     [--voices-dir PATH] [--ws-port P] [--split-chars N]\n");
         printf("\n");
-        printf("  --chunk-first  frames in the first streamed chunk, lower starts sooner (default 4)\n");
-        printf("  --chunk-max    frames the chunk ramps up to, higher is more efficient (default 25)\n");
-        printf("                 set both the same to stream a fixed chunk size\n");
-        printf("  --split-chars  default length long text is broken up at (default 600), 0 sends the\n");
-        printf("                 whole thing through in one pass. a request can still override it\n");
-        printf("  --verbose      add a per stage timing breakdown to each request\n");
-        printf("  --voices-dir   folder of saved .breeze voices to load at startup (default voices)\n");
-        printf("  --ws-port      websocket port for streaming sessions, default is the http port + 1,\n");
-        printf("                 -1 turns it off\n");
+        printf("  --dual-gpu        replicate continuous engine across both CUDA0 and CUDA1\n");
+        printf("  --overload-model  secondary lightweight model (e.g. q8_0-dd4) for traffic spikes\n");
+        printf("  --max-slots       maximum concurrent elastic slots per GPU (default 16)\n");
+        printf("  --chunk-first     frames in the first streamed chunk, lower starts sooner (default 4)\n");
+        printf("  --chunk-max       frames the chunk ramps up to, higher is more efficient (default 25)\n");
+        printf("                    set both the same to stream a fixed chunk size\n");
+        printf("  --split-chars     default length long text is broken up at (default 600), 0 sends the\n");
+        printf("                    whole thing through in one pass. a request can still override it\n");
+        printf("  --verbose         add a per stage timing breakdown to each request\n");
+        printf("  --voices-dir      folder of saved .breeze voices to load at startup (default voices)\n");
+        printf("  --ws-port         websocket port for streaming sessions, default is the http port + 1,\n");
+        printf("                    -1 turns it off\n");
         return argc < 2 ? 1 : 0;
     }
     ServerOptions opts;

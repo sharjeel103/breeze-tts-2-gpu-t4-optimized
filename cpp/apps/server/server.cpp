@@ -50,16 +50,6 @@ int run_server(const ServerOptions & opts) {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8); // otherwise the bar glyphs and any chinese text come out as mojibake
 #endif
-    BreezeModel model;
-    printf("loading voice store model %s ...\n", opts.model.c_str());
-    if (!model.load(opts.model, opts.use_gpu, 0)) {
-        fprintf(stderr, "failed to load model\n");
-        return 1;
-    }
-    const int sr = model.cfg.sample_rate;
-    MimiCodec codec;
-    codec.init(model);
-
     std::vector<std::unique_ptr<ContinuousEngine>> engines;
     engines.push_back(std::make_unique<ContinuousEngine>(0, opts.max_slots));
     if (!engines[0]->load_model(opts.model, opts.overload_model)) {
@@ -67,6 +57,10 @@ int run_server(const ServerOptions & opts) {
         return 1;
     }
     engines[0]->start();
+
+    BreezeModel & model = engines[0]->model();
+    MimiCodec & codec = engines[0]->codec();
+    const int sr = model.cfg.sample_rate;
 
     if (opts.dual_gpu) {
         printf("Initializing Station B on GPU 1 (CUDA1) ...\n");

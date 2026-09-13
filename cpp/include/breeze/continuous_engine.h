@@ -63,6 +63,9 @@ public:
     int device_id() const { return m_device_id; }
     bool is_running() const { return m_running.load(); }
 
+    BreezeModel & model() { return m_model; }
+    MimiCodec & codec() { return m_codec; }
+
 private:
     int m_device_id;
     int m_max_slots;
