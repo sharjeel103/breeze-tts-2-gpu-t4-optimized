@@ -131,34 +131,43 @@ def resolve_model_dir(model_id: str) -> Path:
         return target
 
 @dataclass
+class SlotState:
+    slot_id: int
+    is_active: bool = False
+    request_id: Optional[str] = None
+    prompt_text: str = ""
+    effective_cfg: float = 1.0
+    audio_queue: Optional[asyncio.Queue] = None
+    chunk_buffer: List[torch.Tensor] = field(default_factory=list)
+    total_frames_generated: int = 0
+    first_chunk_emitted: bool = False
+    prefill_len: int = 0
+    max_frames: int = 2560
+    t_admit: float = 0.0
+
+@dataclass
 class Station:
     station_id: int
     device: str                         # Local GPU device ('cuda:0' or 'cuda:1')
-    is_active: bool = False
+    batch_size: int = 2
+    slots: List[SlotState] = field(default_factory=list)
     
     # Graphs (allocated with independent StaticCache on local device)
     backbone_graph: Optional[BackboneGraph] = None
     depth_graph: Optional[DepthDecoderGraph] = None
     
     # State
-    request_id: Optional[str] = None
-    prompt_text: str = ""
-    effective_cfg: float = 4.0
     bb_step: int = 0
     depth_step: int = 0
-    prefill_len: int = 0
-    max_frames: int = 2560
     
-    # Intermediate buffers (pinned on local device)
+    # Intermediate buffers (pinned on local device, shape [batch_size, ...])
     hidden_buf: Optional[torch.Tensor] = None
     token_buf: Optional[torch.Tensor] = None
     frame_buf: Optional[torch.Tensor] = None
     
-    # Chunks & delivery
-    chunk_buffer: List[torch.Tensor] = field(default_factory=list)
-    total_frames_generated: int = 0
-    audio_queue: Optional[asyncio.Queue] = None
-    first_chunk_emitted: bool = False
+    @property
+    def is_active(self) -> bool:
+        return any(s.is_active for s in self.slots)
 
 class AssemblyPipelineEngine:
     def __init__(self, config: Optional[EngineConfig] = None):
@@ -248,9 +257,10 @@ class AssemblyPipelineEngine:
         self.vocoder_worker.warmup()
         
         # 7. Initialize Station A and Station B CUDA Graphs
-        self.batch_size = 2 if self.config.guidance_scale > 1.0 else 1
+        self.batch_size = getattr(self.config, 'batch_size_per_station', 2)
+        self.is_independent_batch = (self.config.guidance_scale <= 1.0)
         self.bucket_sizes = [self.batch_size]
-        print(f"-> Capturing Static CUDA Graphs (batch_size={self.batch_size}, CFG={'Enabled' if self.batch_size == 2 else 'Fastpath Disabled'})...")
+        print(f"-> Capturing Static CUDA Graphs (batch_size={self.batch_size}, CFG={'Enabled' if not self.is_independent_batch else 'Fastpath Disabled / Independent Slots'})...")
         depth_gen = self.model.depth_decoder.generation_config
         
         # Station A Graphs (on cuda:0)
@@ -265,6 +275,7 @@ class AssemblyPipelineEngine:
             max_seq_len=self.config.max_seq_len,
             batch_size=self.batch_size,
             guidance_scale=self.config.guidance_scale,
+            is_independent_batch=self.is_independent_batch,
         )
         bg_a.capture(prefill_len=64)
 
@@ -284,6 +295,7 @@ class AssemblyPipelineEngine:
             top_k=int(getattr(depth_gen, 'top_k', 50)),
             top_p=float(getattr(depth_gen, 'top_p', 1.0)),
             do_sample=bool(getattr(depth_gen, 'do_sample', True)),
+            is_independent_batch=self.is_independent_batch,
         )
         dg_a.capture()
 
@@ -299,6 +311,7 @@ class AssemblyPipelineEngine:
             max_seq_len=self.config.max_seq_len,
             batch_size=self.batch_size,
             guidance_scale=self.config.guidance_scale,
+            is_independent_batch=self.is_independent_batch,
         )
         bg_b.capture(prefill_len=64)
 
@@ -318,6 +331,7 @@ class AssemblyPipelineEngine:
             top_k=int(getattr(depth_gen, 'top_k', 50)),
             top_p=float(getattr(depth_gen, 'top_p', 1.0)),
             do_sample=bool(getattr(depth_gen, 'do_sample', True)),
+            is_independent_batch=self.is_independent_batch,
         )
         dg_b.capture()
 
@@ -325,10 +339,10 @@ class AssemblyPipelineEngine:
         stA = Station(
             station_id=0,
             device=self.dev0,
-            is_active=False,
+            batch_size=self.batch_size,
+            slots=[SlotState(slot_id=i) for i in range(self.batch_size)],
             backbone_graph=bg_a,
             depth_graph=dg_a,
-            max_frames=self.config.max_seq_len,
             hidden_buf=torch.zeros((self.batch_size, 1, self.model.config.hidden_size), device=self.dev0, dtype=self.config.dtype),
             token_buf=torch.zeros(self.batch_size, device=self.dev0, dtype=torch.long),
             frame_buf=torch.zeros((self.batch_size, 1, 16), device=self.dev0, dtype=torch.long),
@@ -339,10 +353,10 @@ class AssemblyPipelineEngine:
         stB = Station(
             station_id=1,
             device=self.dev1,
-            is_active=False,
+            batch_size=self.batch_size,
+            slots=[SlotState(slot_id=i) for i in range(self.batch_size)],
             backbone_graph=bg_b,
             depth_graph=dg_b,
-            max_frames=self.config.max_seq_len,
             hidden_buf=torch.zeros((self.batch_size, 1, self.model.config.hidden_size), device=self.dev1, dtype=self.config.dtype),
             token_buf=torch.zeros(self.batch_size, device=self.dev1, dtype=torch.long),
             frame_buf=torch.zeros((self.batch_size, 1, 16), device=self.dev1, dtype=torch.long),
@@ -357,6 +371,7 @@ class AssemblyPipelineEngine:
     def _admit_pending_prefilled(self):
         """
         Hot-injects waiting requests from prefill worker queue into idle stations.
+        Supports in-flight dual batching (admitting up to station.batch_size requests).
         """
         while not self.prefill_worker.ready_queue.empty():
             idle_station = None
@@ -367,70 +382,169 @@ class AssemblyPipelineEngine:
             if idle_station is None:
                 break
                 
-            prefilled: PrefilledRequest = self.prefill_worker.ready_queue.get_nowait()
+            # Collect up to idle_station.batch_size requests
+            prefilled_list: List[PrefilledRequest] = []
+            while len(prefilled_list) < idle_station.batch_size and not self.prefill_worker.ready_queue.empty():
+                prefilled_list.append(self.prefill_worker.ready_queue.get_nowait())
+                
+            if not prefilled_list:
+                break
+                
+            station_name = "A" if idle_station.station_id == 0 else "B"
+            t_admit = time.time()
+            
             try:
-                idle_station.is_active = True
-                idle_station.request_id = prefilled.request_id
-                idle_station.prompt_text = prefilled.prompt_text
-                idle_station.effective_cfg = prefilled.effective_cfg
                 idle_station.bb_step = 0
                 idle_station.depth_step = 0
-                idle_station.prefill_len = prefilled.prefill_len
-                idle_station.max_frames = prefilled.max_frames
-                idle_station.chunk_buffer.clear()
-                idle_station.total_frames_generated = 0
-                idle_station.audio_queue = prefilled.audio_queue
-                idle_station.first_chunk_emitted = False
                 
-                station_name = "A" if idle_station.station_id == 0 else "B"
-                t_admit = time.time()
+                # Reset all slots
+                for slot in idle_station.slots:
+                    slot.is_active = False
+                    slot.chunk_buffer.clear()
+                    slot.total_frames_generated = 0
+                    slot.first_chunk_emitted = False
+                    slot.request_id = None
+                    slot.audio_queue = None
                 
-                # Signal admission event to client
-                idle_station.audio_queue.put_nowait({
-                    "type": "admitted",
-                    "station": station_name,
-                    "t_admit": t_admit,
-                })
+                num_admitted = len(prefilled_list)
                 
-                # Hot-inject state into station's static graph on idle_station.device
-                idle_station.backbone_graph.guidance_scale.fill_(prefilled.effective_cfg)
-                idle_station.depth_graph.set_guidance_scale(prefilled.effective_cfg)
-                idle_station.backbone_graph.prefill_kv(prefilled.past_key_values)
-                idle_station.backbone_graph.set_generation_state(prefilled.branch_mask.to(idle_station.device))
-                
-                # Initial token and hidden
-                idle_station.hidden_buf.copy_(prefilled.initial_hidden[:, -1:, :].to(idle_station.device))
-                idle_station.token_buf.copy_(prefilled.initial_token.view(-1).repeat(self.batch_size).to(idle_station.device))
-                
-                print(f"[AssemblyLine] Station {station_name} Admitted: Req={prefilled.request_id} ('{prefilled.prompt_text[:25]}...')", flush=True)
+                if num_admitted == 1:
+                    p0 = prefilled_list[0]
+                    slot0 = idle_station.slots[0]
+                    slot0.is_active = True
+                    slot0.request_id = p0.request_id
+                    slot0.prompt_text = p0.prompt_text
+                    slot0.effective_cfg = p0.effective_cfg
+                    slot0.prefill_len = p0.prefill_len
+                    slot0.max_frames = p0.max_frames
+                    slot0.audio_queue = p0.audio_queue
+                    slot0.t_admit = t_admit
+                    slot0.audio_queue.put_nowait({
+                        "type": "admitted",
+                        "station": station_name,
+                        "slot": 0,
+                        "t_admit": t_admit,
+                    })
+                    
+                    # Single request: replicate across batch rows for static graph compatibility
+                    idle_station.backbone_graph.guidance_scale.fill_(p0.effective_cfg)
+                    idle_station.depth_graph.set_guidance_scale(p0.effective_cfg)
+                    idle_station.backbone_graph.static_cache.reset()
+                    
+                    for li in range(idle_station.backbone_graph.num_layers):
+                        k0, v0 = p0.past_key_values[li]
+                        k_rep = k0.repeat(idle_station.batch_size, 1, 1, 1).to(idle_station.device, non_blocking=True)
+                        v_rep = v0.repeat(idle_station.batch_size, 1, 1, 1).to(idle_station.device, non_blocking=True)
+                        idle_station.backbone_graph.static_cache.layers[li].key_cache[:idle_station.batch_size, :, :p0.prefill_len, :].copy_(k_rep)
+                        idle_station.backbone_graph.static_cache.layers[li].value_cache[:idle_station.batch_size, :, :p0.prefill_len, :].copy_(v_rep)
+                        
+                    idle_station.backbone_graph._prefill_len = p0.prefill_len
+                    mask_rep = p0.branch_mask.to(idle_station.device).repeat(idle_station.batch_size, 1) if p0.branch_mask.dim() == 2 else torch.ones((idle_station.batch_size, p0.prefill_len), device=idle_station.device, dtype=torch.long)
+                    idle_station.backbone_graph.set_generation_state(mask_rep)
+                    
+                    idle_station.hidden_buf.copy_(p0.initial_hidden[:, -1:, :].to(idle_station.device).repeat(idle_station.batch_size, 1, 1))
+                    idle_station.token_buf.copy_(p0.initial_token.view(-1).repeat(idle_station.batch_size).to(idle_station.device))
+                    
+                    print(f"[AssemblyLine] Station {station_name} Admitted 1 Req: Slot0={p0.request_id} ('{p0.prompt_text[:25]}...')", flush=True)
+
+                else:
+                    # num_admitted == 2: Dual batch admission!
+                    p0 = prefilled_list[0]
+                    p1 = prefilled_list[1]
+                    
+                    L0 = p0.prefill_len
+                    L1 = p1.prefill_len
+                    L_max = max(L0, L1)
+                    
+                    for idx, p in enumerate([p0, p1]):
+                        slot = idle_station.slots[idx]
+                        slot.is_active = True
+                        slot.request_id = p.request_id
+                        slot.prompt_text = p.prompt_text
+                        slot.effective_cfg = p.effective_cfg
+                        slot.prefill_len = p.prefill_len
+                        slot.max_frames = p.max_frames
+                        slot.audio_queue = p.audio_queue
+                        slot.t_admit = t_admit
+                        slot.audio_queue.put_nowait({
+                            "type": "admitted",
+                            "station": station_name,
+                            "slot": idx,
+                            "t_admit": t_admit,
+                        })
+                    
+                    idle_station.backbone_graph.guidance_scale.fill_(1.0)
+                    idle_station.depth_graph.set_guidance_scale(1.0)
+                    idle_station.backbone_graph.static_cache.reset()
+                    
+                    for li in range(idle_station.backbone_graph.num_layers):
+                        k0, v0 = p0.past_key_values[li]
+                        k1, v1 = p1.past_key_values[li]
+                        
+                        k0_pad = torch.nn.functional.pad(k0, (0, 0, L_max - L0, 0))
+                        k1_pad = torch.nn.functional.pad(k1, (0, 0, L_max - L1, 0))
+                        v0_pad = torch.nn.functional.pad(v0, (0, 0, L_max - L0, 0))
+                        v1_pad = torch.nn.functional.pad(v1, (0, 0, L_max - L1, 0))
+                        
+                        k_batch = torch.cat([k0_pad, k1_pad], dim=0).to(idle_station.device, non_blocking=True)
+                        v_batch = torch.cat([v0_pad, v1_pad], dim=0).to(idle_station.device, non_blocking=True)
+                        
+                        idle_station.backbone_graph.static_cache.layers[li].key_cache[:2, :, :L_max, :].copy_(k_batch)
+                        idle_station.backbone_graph.static_cache.layers[li].value_cache[:2, :, :L_max, :].copy_(v_batch)
+                        
+                    idle_station.backbone_graph._prefill_len = L_max
+                    
+                    # Attention mask with left-padding
+                    mask0 = torch.ones((1, L0), dtype=torch.long, device=idle_station.device)
+                    mask0_pad = torch.nn.functional.pad(mask0, (L_max - L0, 0), value=0)
+                    mask1 = torch.ones((1, L1), dtype=torch.long, device=idle_station.device)
+                    mask1_pad = torch.nn.functional.pad(mask1, (L_max - L1, 0), value=0)
+                    attn_mask = torch.cat([mask0_pad, mask1_pad], dim=0)
+                    idle_station.backbone_graph.set_generation_state(attn_mask)
+                    
+                    h0 = p0.initial_hidden[:, -1:, :].to(idle_station.device)
+                    h1 = p1.initial_hidden[:, -1:, :].to(idle_station.device)
+                    idle_station.hidden_buf.copy_(torch.cat([h0, h1], dim=0))
+                    
+                    t0 = p0.initial_token.view(1).to(idle_station.device)
+                    t1 = p1.initial_token.view(1).to(idle_station.device)
+                    idle_station.token_buf.copy_(torch.cat([t0, t1], dim=0))
+                    
+                    print(f"[AssemblyLine] Station {station_name} Admitted 2 Reqs: Slot0={p0.request_id} ('{p0.prompt_text[:20]}...') & Slot1={p1.request_id} ('{p1.prompt_text[:20]}...')", flush=True)
+
             except Exception as e:
                 import traceback
-                print(f"[AssemblyLine] ERROR during admission of {prefilled.request_id}: {e}", flush=True)
+                print(f"[AssemblyLine] ERROR during admission on Station {station_name}: {e}", flush=True)
                 traceback.print_exc()
-                idle_station.is_active = False
+                for s in idle_station.slots:
+                    s.is_active = False
 
     def _execute_station_step(self, st: Station, stream: torch.cuda.Stream):
         with torch.cuda.device(st.device), torch.cuda.stream(stream):
             # Depth Step
             h = st.hidden_buf[:, 0, :]
-            depth_toks = st.depth_graph.run(h, st.token_buf, guidance_scale=st.effective_cfg, temperature=0.8)
-            frame = torch.cat([st.token_buf[:1].view(1), depth_toks[0]], dim=0)
-            st.chunk_buffer.append(frame.detach())
-            st.total_frames_generated += 1
+            depth_toks = st.depth_graph.run(h, st.token_buf, guidance_scale=1.0, temperature=0.8)
+            
+            for slot_idx, slot in enumerate(st.slots):
+                frame = torch.cat([st.token_buf[slot_idx : slot_idx + 1].view(1), depth_toks[slot_idx]], dim=0)
+                st.frame_buf[slot_idx, 0, :].copy_(frame)
+                if slot.is_active:
+                    slot.chunk_buffer.append(frame.detach())
+                    slot.total_frames_generated += 1
             st.depth_step += 1
 
             # Backbone Step
-            st.frame_buf.copy_(frame.view(1, 1, 16).repeat(self.batch_size, 1, 1))
             h_next, logits = st.backbone_graph.run(st.frame_buf, step_idx=st.bb_step)
-            tok = sample_logits(
+            toks = sample_logits(
                 logits.float(),
                 suppress_tokens=self._reserved_tokens,
                 temperature=self.config.temperature,
                 top_k=self.config.top_k,
                 top_p=self.config.top_p,
                 do_sample=self.config.do_sample,
-            ).view(1)
-            st.token_buf.copy_(tok.repeat(self.batch_size))
+            ) # shape [batch_size]
+            
+            st.token_buf.copy_(toks)
             st.hidden_buf.copy_(h_next[:, -1:, :])
             st.bb_step += 1
         stream.synchronize()
@@ -442,30 +556,30 @@ class AssemblyPipelineEngine:
         Station A computes Backbone + Depth on GPU 0 || Station B computes Backbone + Depth on GPU 1.
         Uses thread pool for true simultaneous hardware concurrency on both GPUs (zero cross-GPU contention).
         """
-        stA = self.stations[0]
-        stB = self.stations[1]
-
         # -------------------------------------------------------------
-        # 1. Termination checks for active stations
+        # 1. Termination checks for active slots across all stations
         # -------------------------------------------------------------
-        for st in (stA, stB):
-            if st.is_active:
-                hit_eos = is_backbone_eos_token(st.token_buf[:1], self.model.config)
-                hit_max = st.depth_step >= st.max_frames or (st.prefill_len + st.depth_step) >= (self.config.max_seq_len - 1)
-                if hit_eos or hit_max:
-                    st.is_active = False
-                    dur = st.total_frames_generated * 0.08
-                    name = "A" if st.station_id == 0 else "B"
-                    print(f"[AssemblyLine] Station {name} Finished ({'EOS' if hit_eos else 'Max'}): Req={st.request_id} | Frames={st.total_frames_generated} ({dur:.2f}s audio)")
-                    chunk = list(st.chunk_buffer)
-                    st.chunk_buffer.clear()
-                    if st.audio_queue is not None:
-                        asyncio.create_task(self.vocoder_worker.emit_chunk(st.audio_queue, chunk, is_final=True))
-                    st.request_id = None
+        for st in self.stations:
+            for slot_idx, slot in enumerate(st.slots):
+                if slot.is_active:
+                    hit_eos = is_backbone_eos_token(st.token_buf[slot_idx], self.model.config)
+                    hit_max = (st.depth_step >= slot.max_frames) or (slot.prefill_len + st.depth_step >= (self.config.max_seq_len - 1))
+                    if hit_eos or hit_max:
+                        slot.is_active = False
+                        dur = slot.total_frames_generated * 0.08
+                        station_name = "A" if st.station_id == 0 else "B"
+                        print(f"[AssemblyLine] Station {station_name} Slot {slot_idx} Finished ({'EOS' if hit_eos else 'Max'}): Req={slot.request_id} | Frames={slot.total_frames_generated} ({dur:.2f}s audio)")
+                        chunk = list(slot.chunk_buffer)
+                        slot.chunk_buffer.clear()
+                        if slot.audio_queue is not None:
+                            asyncio.create_task(self.vocoder_worker.emit_chunk(slot.audio_queue, chunk, is_final=True))
+                        slot.request_id = None
 
         # -------------------------------------------------------------
         # 2. Concurrently step active stations via ThreadPool
         # -------------------------------------------------------------
+        stA = self.stations[0]
+        stB = self.stations[1]
         if stA.is_active and stB.is_active:
             futA = self.thread_pool.submit(self._execute_station_step, stA, self.stream_A)
             futB = self.thread_pool.submit(self._execute_station_step, stB, self.stream_B)
@@ -477,24 +591,25 @@ class AssemblyPipelineEngine:
             self._execute_station_step(stB, self.stream_B)
 
         # -------------------------------------------------------------
-        # 3. Periodic Chunk Emission for Active Stations
+        # 3. Periodic Chunk Emission for Active Slots
         # -------------------------------------------------------------
         for st in self.stations:
-            if not st.is_active:
-                continue
-            threshold = 1 if not st.first_chunk_emitted else self.config.chunk_size
-            if len(st.chunk_buffer) >= threshold:
-                st.first_chunk_emitted = True
-                chunk_to_emit = list(st.chunk_buffer)
-                st.chunk_buffer.clear()
-                if st.audio_queue is not None:
-                    asyncio.create_task(
-                        self.vocoder_worker.emit_chunk(
-                            queue=st.audio_queue,
-                            frames=chunk_to_emit,
-                            is_final=False,
+            for slot in st.slots:
+                if not slot.is_active:
+                    continue
+                threshold = 1 if not slot.first_chunk_emitted else self.config.chunk_size
+                if len(slot.chunk_buffer) >= threshold:
+                    slot.first_chunk_emitted = True
+                    chunk_to_emit = list(slot.chunk_buffer)
+                    slot.chunk_buffer.clear()
+                    if slot.audio_queue is not None:
+                        asyncio.create_task(
+                            self.vocoder_worker.emit_chunk(
+                                queue=slot.audio_queue,
+                                frames=chunk_to_emit,
+                                is_final=False,
+                            )
                         )
-                    )
                 
         return sum(1 for s in self.stations if s.is_active)
 

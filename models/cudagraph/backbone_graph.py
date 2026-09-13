@@ -45,10 +45,12 @@ class BackboneGraph:
         guidance_scale=3.0,
         debug: bool = False,
         batch_size: int = 1,
+        is_independent_batch: bool = False,
     ):
         self.device = device
         self.dtype = dtype
         self.debug = debug
+        self.is_independent_batch = is_independent_batch
         self.no_graph = (
             False  # runtime flag: True = skip graph replay (for layer-diff hooks)
         )
@@ -100,8 +102,9 @@ class BackboneGraph:
         # Pre-allocated index range [0, 1, ..., max_seq_len-1] for broadcasting
         self._kv_indices = torch.arange(max_seq_len, dtype=torch.long, device=device)
 
-    @staticmethod
-    def _real_batch_size(batch_size: int) -> int:
+    def _real_batch_size(self, batch_size: int) -> int:
+        if getattr(self, "is_independent_batch", False):
+            return batch_size
         if batch_size <= 1:
             return batch_size
         return batch_size // 2
@@ -124,9 +127,10 @@ class BackboneGraph:
         self.logits_buf = torch.zeros(
             self.batch_size, self.vocab_size, dtype=torch.float32, device=self.device
         )
-        # CFG-applied logits [half, vocab_size]
+        # CFG-applied logits [half, vocab_size] (or [batch_size, vocab_size] if independent)
+        out_rows = self.batch_size if getattr(self, "is_independent_batch", False) else self.half
         self.cfg_logits_buf = torch.zeros(
-            self.half, self.vocab_size, dtype=torch.float32, device=self.device
+            out_rows, self.vocab_size, dtype=torch.float32, device=self.device
         )
 
     # ------------------------------------------------------------------
@@ -274,15 +278,17 @@ class BackboneGraph:
         self.logits_buf.copy_(logits)
 
         # 4. CFG when paired cond/uncond rows are present; otherwise pass through.
-        if self.batch_size >= 2:
+        if getattr(self, "is_independent_batch", False):
+            self.cfg_logits_buf.copy_(self.logits_buf[: self.half])
+        elif self.batch_size >= 2:
             cond_logits = self.logits_buf[: self.half]
             uncond_logits = self.logits_buf[self.half :]
             cfg_result = uncond_logits + self.guidance_scale * (
                 cond_logits - uncond_logits
             )
+            self.cfg_logits_buf.copy_(cfg_result)
         else:
-            cfg_result = self.logits_buf[: self.half]
-        self.cfg_logits_buf.copy_(cfg_result)
+            self.cfg_logits_buf.copy_(self.logits_buf[: self.half])
 
     @torch.inference_mode()
     def capture(self, prefill_len=100, num_warmup=3):

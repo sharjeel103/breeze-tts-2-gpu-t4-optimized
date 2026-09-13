@@ -8,7 +8,8 @@ import torch
 @dataclass
 class EngineConfig:
     # Slot & Concurrency Settings
-    num_slots: int = 4              # Number of in-flight active slots (4 or 8)
+    num_slots: int = 4              # Number of in-flight active slots (4 concurrent streams)
+    batch_size_per_station: int = 2 # In-flight batch size per station (2 on dev0, 2 on dev1)
     max_seq_len: int = 2560         # Max acoustic frames (2560 * 0.08s = 204.8s for 500-word prompts)
     chunk_size: int = 8             # Frames per streaming vocoder chunk (8 * 80ms = 640ms)
     sample_rate: int = 24000        # Audio sample rate in Hz

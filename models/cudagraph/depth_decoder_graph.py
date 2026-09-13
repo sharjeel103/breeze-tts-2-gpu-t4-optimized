@@ -109,11 +109,13 @@ class DepthDecoderGraph:
         debug: bool = False,
         batch_size=2,
         bucket_sizes: list[int] | None = None,
+        is_independent_batch: bool = False,
     ):
         self.device = device
         self.dtype = dtype
         self.config = config
         self.debug = debug
+        self.is_independent_batch = is_independent_batch
         self.no_graph = (
             False  # runtime flag: True = skip graph replay (for layer-diff hooks)
         )
@@ -231,8 +233,9 @@ class DepthDecoderGraph:
         self.prefill_attn = None
         self.decode_attn = None
 
-    @staticmethod
-    def _real_batch_size(batch_size: int) -> int:
+    def _real_batch_size(self, batch_size: int) -> int:
+        if getattr(self, "is_independent_batch", False):
+            return batch_size
         if batch_size <= 1:
             return batch_size
         return batch_size // 2
@@ -498,7 +501,9 @@ class DepthDecoderGraph:
         For batch_size=2*N: processes N samples, writes to both halves (cond+uncond).
         """
         # logits: [batch_size, 1, vocab]
-        if self.batch_size >= 2:
+        if getattr(self, "is_independent_batch", False):
+            cfg = logits[: self.half, 0, :]
+        elif self.batch_size >= 2:
             cond_logits = logits[: self.half, 0, :]
             uncond_logits = logits[self.half :, 0, :]
             cfg = uncond_logits + self.guidance_scale * (cond_logits - uncond_logits)
@@ -556,9 +561,12 @@ class DepthDecoderGraph:
         )  # [half] per-sample
 
         # Write to the active slots; duplicate for paired cond/uncond mode.
-        self._tok_buf[: self.half] = toks
-        if self.batch_size >= 2:
-            self._tok_buf[self.half :] = toks
+        if getattr(self, "is_independent_batch", False):
+            self._tok_buf[: self.half] = toks
+        else:
+            self._tok_buf[: self.half] = toks
+            if self.batch_size >= 2:
+                self._tok_buf[self.half :] = toks
 
     def _full_loop(self):
         """The full depth decoder loop on static buffers. Graph-safe."""
@@ -906,7 +914,7 @@ class DepthDecoderGraph:
 
         # Safety guard: single CFG expects paired cond+uncond rows. no-CFG uses
         # batch=1 and is valid.
-        if actual_batch != 1 and actual_batch % 2 != 0:
+        if not getattr(self, "is_independent_batch", False) and actual_batch != 1 and actual_batch % 2 != 0:
             _log.warning(
                 "DepthDecoderGraph.run: invalid CFG actual_batch=%d, "
                 "returning zeros to avoid CUDA graph mismatch",
@@ -940,6 +948,9 @@ class DepthDecoderGraph:
         if actual_batch == 1:
             self.backbone_hidden_buf[:1].copy_(backbone_hidden[:1])
             self.first_cb_token_buf[:1].copy_(first_cb_token[:1])
+        elif getattr(self, "is_independent_batch", False):
+            self.backbone_hidden_buf[:actual_batch].copy_(backbone_hidden[:actual_batch])
+            self.first_cb_token_buf[:actual_batch].copy_(first_cb_token[:actual_batch])
         else:
             # Preserve the CFG layout expected by _cfg_sample:
             # [cond real][cond pad][uncond real][uncond pad].
