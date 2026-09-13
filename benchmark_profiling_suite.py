@@ -61,69 +61,54 @@ ESSAY_500_WORDS = (
     "acoustic experiences for everyone."
 )
 
-PROMPT_POOL_15 = [
-    # Short Prompts (Req 01 - 04)
-    {"id": "Req_01_Short", "text": "Order confirmed, thank you.", "instruction": "Clean and polite."},
-    {"id": "Req_02_Short", "text": "System update completed successfully.", "instruction": "Calm female assistant."},
-    {"id": "Req_03_Short", "text": "Good morning! How may I assist you today?", "instruction": "Friendly customer service."},
-    {"id": "Req_04_Short", "text": "Your flight has been scheduled on time.", "instruction": "Airport announcement."},
-    
-    # Medium Prompts (Req 05 - 09)
-    {
-        "id": "Req_05_Med",
-        "text": "Welcome back to the studio. Today we will discuss modern artificial intelligence, deep neural vocoders, and real-time speech architectures.",
-        "instruction": "Energetic podcast host tone.",
-    },
-    {
-        "id": "Req_06_Med",
-        "text": "Neural text to speech models have advanced rapidly over the past few years, enabling expressive prosody and zero-shot voice cloning.",
-        "instruction": "Informative narrator.",
-    },
-    {
-        "id": "Req_07_Med",
-        "text": "Thank you for joining our live technology conference, streaming worldwide to engineers and researchers.",
-        "instruction": "Keynote speaker.",
-    },
-    {
-        "id": "Req_08_Med",
-        "text": "The weather today will be mostly sunny with mild temperatures across the metropolitan area, ideal for outdoor activities.",
-        "instruction": "Radio broadcaster.",
-    },
-    {"id": "Req_09_Med", "text": "All operations finalized. Have a wonderful and productive day!", "instruction": "Pleasant closing tone."},
+PROMPT_POOL_40 = [
+    # Batch 1 (01 - 10): Customer Service & Announcements
+    {"id": "Req_01", "text": "Your order has been confirmed and is currently being packed for express delivery this afternoon.", "instruction": "Clean and polite."},
+    {"id": "Req_02", "text": "The system update completed successfully without any errors, and all security patches have been safely installed.", "instruction": "Calm female assistant."},
+    {"id": "Req_03", "text": "Good morning! Please let me know how I can assist you with your schedule and appointments today.", "instruction": "Friendly customer service."},
+    {"id": "Req_04", "text": "Flight seven twelve to San Francisco is now boarding at terminal two, gate twenty-four.", "instruction": "Airport announcement."},
+    {"id": "Req_05", "text": "The project planning meeting has been rescheduled to Thursday at three in the afternoon, conference room four.", "instruction": "Professional assistant."},
+    {"id": "Req_06", "text": "Your payment was processed successfully, and an itemized digital receipt has been sent to your primary email.", "instruction": "Polite confirmation."},
+    {"id": "Req_07", "text": "The air quality index is currently moderate across the valley with light northwesterly winds throughout the morning.", "instruction": "Radio broadcaster."},
+    {"id": "Req_08", "text": "All cluster network services are running normally with optimal bandwidth and zero packet loss detected.", "instruction": "Technical narrator."},
+    {"id": "Req_09", "text": "Please remember to submit your weekly engineering progress report before five this evening for team review.", "instruction": "Courteous reminder."},
+    {"id": "Req_10", "text": "Your ride has arrived outside the main hotel lobby. The silver vehicle license plate is five alpha seven.", "instruction": "Navigation prompt."},
 
-    # Long Prompts (Req 10 - 14)
-    {
-        "id": "Req_10_Long",
-        "text": "Autonomous agent systems require meticulous engineering across GPU memory hierarchy, kernel fusion, and continuous in-flight batching to achieve optimal throughput without suffering from driver context-switching penalties or memory allocator locks.",
-        "instruction": "Authoritative documentary voice.",
-    },
-    {
-        "id": "Req_11_Long",
-        "text": "Distributed model execution across multi-GPU environments requires balancing compute density, PCIe interconnect bandwidth, and tensor placement to maintain high GPU occupancy without pipeline starvation.",
-        "instruction": "Technical professor lecture.",
-    },
-    {
-        "id": "Req_12_Long",
-        "text": "Recent breakthroughs in generative speech synthesis demonstrate that acoustic token prediction can be decomposed into an autoregressive semantic backbone paired with a parallel depth transformer, significantly outperforming legacy pipelines.",
-        "instruction": "Research scientist presentation.",
-    },
-    {
-        "id": "Req_13_Long",
-        "text": "High performance deep learning serving requires full alignment between the software orchestration layer and the hardware execution pipeline, minimizing thread synchronization latency while maintaining deterministic tensor strides.",
-        "instruction": "Systems architect.",
-    },
-    {
-        "id": "Req_14_Long",
-        "text": "Modern text to speech synthesis achieves emotional nuance and expressive cadence through hierarchical multi-codebook quantization and continuous diffusion vocoding.",
-        "instruction": "Documentary narrator.",
-    },
+    # Batch 2 (11 - 20): Assistant & Smart Home
+    {"id": "Req_11", "text": "Today will be mostly clear and sunny with mild afternoon temperatures reaching seventy-four degrees across the city.", "instruction": "Weather reporter."},
+    {"id": "Req_12", "text": "The conference keynote begins in ten minutes in the primary auditorium on floor three, open to all attendees.", "instruction": "Event coordinator."},
+    {"id": "Req_13", "text": "Your prescription order is ready for pickup at the neighborhood pharmacy counter on Maple Avenue.", "instruction": "Healthcare assistant."},
+    {"id": "Req_14", "text": "The express commuter train to central station will depart from platform four in exactly six minutes.", "instruction": "Transit announcement."},
+    {"id": "Req_15", "text": "A new firmware update is available for your smart display. Please ensure a stable Wi-Fi connection to proceed.", "instruction": "Helpful smart home assistant."},
+    {"id": "Req_16", "text": "Your checking account balance has been updated following the recent automated monthly savings transfer.", "instruction": "Banking alert."},
+    {"id": "Req_17", "text": "The university library will be closing in fifteen minutes. Please bring all borrowed materials to the front circulation desk.", "instruction": "Campus announcement."},
+    {"id": "Req_18", "text": "Traffic on the interstate highway is moving smoothly with an estimated total travel time of twenty-two minutes.", "instruction": "Navigation assistant."},
+    {"id": "Req_19", "text": "Welcome to the national science center. Guided audio tours commence every hour on the hour at the main rotunda.", "instruction": "Tour guide."},
+    {"id": "Req_20", "text": "Your table reservation for four guests at Bistro Bella has been confirmed for eight tonight on the patio.", "instruction": "Concierge tone."},
 
-    # Ultra-Long Prompt (500 words, ~2,000 frames)
-    {
-        "id": "Req_15_UltraLong",
-        "text": ESSAY_500_WORDS,
-        "instruction": "Thoughtful, articulate philosophical keynote voice.",
-    },
+    # Batch 3 (21 - 30): Alerts, Logistics & Operational
+    {"id": "Req_21", "text": "The morning courier package has been safely delivered to the front reception desk for your immediate collection.", "instruction": "Office concierge."},
+    {"id": "Req_22", "text": "Routine server infrastructure maintenance is scheduled for tonight at midnight and will last approximately one hour.", "instruction": "System administrator."},
+    {"id": "Req_23", "text": "Temperatures will drop noticeably tonight under clear starry skies with a gentle autumn breeze from the north.", "instruction": "Calm narrator."},
+    {"id": "Req_24", "text": "Your international flight check-in is complete, and your digital boarding passes have been synchronized to your phone.", "instruction": "Airline assistant."},
+    {"id": "Req_25", "text": "The live technical webinar on distributed computing architectures will begin promptly at noon Eastern Standard Time.", "instruction": "Webinar host."},
+    {"id": "Req_26", "text": "Security notification: a new login was detected from a personal laptop in Chicago, Illinois. Please verify your identity.", "instruction": "Security alert."},
+    {"id": "Req_27", "text": "The passenger elevator on the north wing is currently undergoing maintenance and will reopen at two this afternoon.", "instruction": "Building announcement."},
+    {"id": "Req_28", "text": "Your premium software subscription has been renewed successfully, unlocking continuous priority access to all cloud tools.", "instruction": "Customer care."},
+    {"id": "Req_29", "text": "Passengers traveling to terminal B should proceed to shuttle stop three for immediate baggage transfer.", "instruction": "Transit audio."},
+    {"id": "Req_30", "text": "The downtown business shuttle departs every fifteen minutes from the central transit plaza near the historic clock tower.", "instruction": "City transit guide."},
+
+    # Batch 4 (31 - 40): Daily Summaries & Notifications
+    {"id": "Req_31", "text": "A temporary authorization code has been dispatched to your mobile phone number via secure text messaging.", "instruction": "Verification voice."},
+    {"id": "Req_32", "text": "The resident fitness facility will remain open until eleven tonight for all registered hotel and club members.", "instruction": "Hospitality host."},
+    {"id": "Req_33", "text": "Local traffic monitors report minor road construction delays near the east river crossing during evening peak hours.", "instruction": "Traffic broadcast."},
+    {"id": "Req_34", "text": "Your analytical quarterly summary report has finished generating and is now available for download on the management portal.", "instruction": "Business assistant."},
+    {"id": "Req_35", "text": "The interactive workshop on modern deep learning frameworks begins at ten sharp in computer laboratory C.", "instruction": "Instructor voice."},
+    {"id": "Req_36", "text": "Thank you for visiting our technology showroom today. Please take your complimentary catalog and have a wonderful day.", "instruction": "Warm goodbye."},
+    {"id": "Req_37", "text": "Tomorrow's weather forecast calls for brief morning showers followed by pleasant sunshine and light southerly breezes.", "instruction": "Weather anchor."},
+    {"id": "Req_38", "text": "Your consultation appointment with Doctor Reynolds has been confirmed for Tuesday morning at ten thirty.", "instruction": "Medical receptionist."},
+    {"id": "Req_39", "text": "The production cluster deployment completed without incident, and all containerized microservices report healthy operational status.", "instruction": "DevOps assistant."},
+    {"id": "Req_40", "text": "All pending banking transactions have cleared, and your comprehensive monthly financial statement is now available to view.", "instruction": "Financial adviser."},
 ]
 
 async def run_client_task(
@@ -297,21 +282,21 @@ async def main():
         res_dual = await run_condition_benchmark(
             engine,
             condition_name="Condition_1_Symmetrical_Dual",
-            prompts=[PROMPT_POOL_15[4], PROMPT_POOL_15[5]],  # 2 Medium prompts
+            prompts=[PROMPT_POOL_40[0], PROMPT_POOL_40[1]],  # 2 balanced prompts
             csv_path="/tmp/gpu_profile_symmetrical_dual.csv",
         )
         all_benchmarks["Condition_1_Symmetrical_Dual"] = res_dual
 
         # -------------------------------------------------------------
-        # Condition 2: N=15 Scale Burst Stress Test (Includes 500-Word Prompt!)
+        # Condition 2: N=40 Balanced Scale Burst Stress Test
         # -------------------------------------------------------------
-        res_15 = await run_condition_benchmark(
+        res_40 = await run_condition_benchmark(
             engine,
-            condition_name="Condition_2_Fifteen_Request_Burst",
-            prompts=PROMPT_POOL_15,  # All 15 requests
-            csv_path="/tmp/gpu_profile_15_burst.csv",
+            condition_name="Condition_2_Forty_Request_Burst",
+            prompts=PROMPT_POOL_40,  # All 40 balanced requests
+            csv_path="/tmp/gpu_profile_40_burst.csv",
         )
-        all_benchmarks["Condition_2_Fifteen_Request_Burst"] = res_15
+        all_benchmarks["Condition_2_Forty_Request_Burst"] = res_40
 
     finally:
         engine.running = False
