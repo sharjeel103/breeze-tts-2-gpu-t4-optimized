@@ -431,12 +431,12 @@ class AssemblyPipelineEngine:
                     idle_station.depth_graph.set_guidance_scale(p0.effective_cfg)
                     idle_station.backbone_graph.static_cache.reset()
                     
+                    cache_pos = torch.arange(p0.prefill_len, device=idle_station.device)
                     for li in range(idle_station.backbone_graph.num_layers):
                         k0, v0 = p0.past_key_values[li]
                         k_rep = k0.repeat(idle_station.batch_size, 1, 1, 1).to(idle_station.device, non_blocking=True)
                         v_rep = v0.repeat(idle_station.batch_size, 1, 1, 1).to(idle_station.device, non_blocking=True)
-                        idle_station.backbone_graph.static_cache.layers[li].key_cache[:idle_station.batch_size, :, :p0.prefill_len, :].copy_(k_rep)
-                        idle_station.backbone_graph.static_cache.layers[li].value_cache[:idle_station.batch_size, :, :p0.prefill_len, :].copy_(v_rep)
+                        idle_station.backbone_graph.static_cache.update(k_rep, v_rep, li, {"cache_position": cache_pos})
                         
                     idle_station.backbone_graph._prefill_len = p0.prefill_len
                     mask_rep = p0.branch_mask.to(idle_station.device).repeat(idle_station.batch_size, 1) if p0.branch_mask.dim() == 2 else torch.ones((idle_station.batch_size, p0.prefill_len), device=idle_station.device, dtype=torch.long)
@@ -477,6 +477,7 @@ class AssemblyPipelineEngine:
                     idle_station.depth_graph.set_guidance_scale(1.0)
                     idle_station.backbone_graph.static_cache.reset()
                     
+                    cache_pos = torch.arange(L_max, device=idle_station.device)
                     for li in range(idle_station.backbone_graph.num_layers):
                         k0, v0 = p0.past_key_values[li]
                         k1, v1 = p1.past_key_values[li]
@@ -489,8 +490,7 @@ class AssemblyPipelineEngine:
                         k_batch = torch.cat([k0_pad, k1_pad], dim=0).to(idle_station.device, non_blocking=True)
                         v_batch = torch.cat([v0_pad, v1_pad], dim=0).to(idle_station.device, non_blocking=True)
                         
-                        idle_station.backbone_graph.static_cache.layers[li].key_cache[:2, :, :L_max, :].copy_(k_batch)
-                        idle_station.backbone_graph.static_cache.layers[li].value_cache[:2, :, :L_max, :].copy_(v_batch)
+                        idle_station.backbone_graph.static_cache.update(k_batch, v_batch, li, {"cache_position": cache_pos})
                         
                     idle_station.backbone_graph._prefill_len = L_max
                     
